@@ -222,6 +222,9 @@ def spec_dict(input_path: str, options, stream_index: int | None = None,
             "keep_channels": bool(options.keep_channels),
             "output_rate": options.output_rate,
             "output_ext": options.output_ext,
+            # 输出模式也必须进指纹：否则「同一参数输出音频」与「写回视频」会算出同一
+            # 指纹而互相复用（虽然扩展名目前恰好不同，但不能依赖这种巧合）
+            "video_out": bool(getattr(options, "video_out", False)),
         },
     })
 
@@ -283,6 +286,8 @@ def display_label(options) -> str:
     if options.dereverb_enabled:
         tail.append("去混响")
     rate = f"{options.output_rate // 1000} kHz" if options.output_rate else "源采样率"
+    if getattr(options, "video_out", False):
+        label_parts.append("写回视频")
     return f"{' '.join(label_parts)} · {'/'.join(tail)} · {rate}"
 
 

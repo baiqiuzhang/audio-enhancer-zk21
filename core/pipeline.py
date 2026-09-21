@@ -90,6 +90,7 @@ class PipelineOptions:
     output_ext: str = ".wav"
     output_path: str | None = None        # 显式指定输出文件；None 则按命名规范生成
     output_dir: str | None = None         # 覆盖输出目录；None = 输入目录下的 AudioEnhancer_zk21/
+    video_out: bool = False              # True = 把增强后的音轨写回视频（画面 stream copy，不重编码）
     write_output: bool = True             # False = 只在内存里出结果，不按命名规范写盘、也不查复用
     reuse_existing: bool = True           # 参数完全相同则复用已有文件，不重算
 
@@ -520,12 +521,21 @@ def run(
         out_path = media_io.write_audio(options.output_path, enhanced, target_rate)
         note(f"已写出：{out_path}")
     elif out_dir:
-        _tick(progress, 0.97, "写出文件…")
         out_path = os.path.join(
             out_dir, outputs.build_filename(media_path, options, fp, eng_kind)
         )
-        media_io.write_audio(out_path, enhanced, target_rate)
-        note(f"已写出：{out_path}")
+        if options.video_out:
+            check_video_out_ok(info, media_path, trim_span, len(original))
+            _tick(progress, 0.97, "写回视频（画面不重编码）…")
+            media_io.write_video_with_audio(
+                media_path, out_path, enhanced, target_rate,
+                replace_stream_index=resolved,
+            )
+            note(f"已写回视频（画面原样复制）：{out_path}")
+        else:
+            _tick(progress, 0.97, "写出文件…")
+            media_io.write_audio(out_path, enhanced, target_rate)
+            note(f"已写出：{out_path}")
         try:
             outputs.register(out_dir, outputs.VariantEntry(
                 fp=fp,
@@ -576,6 +586,28 @@ def run(
         stages=stages,
         reverb_slope_db_s=reverb.get("slope_db_per_s"),
     )
+
+
+def check_video_out_ok(info, media_path: str, trim_span, original_frames: int) -> None:
+    """写回视频前的全部拒绝条件，集中在这里以便逐条测试。
+
+    宁可明确拒绝，也不降级成静默重编码或产出音画不同步的文件——与本项目
+    「实测无效就硬拒绝，不给会毁素材的开关」的既有取向一致（见 core/wpe.py）。
+    """
+    if not info.is_video:
+        raise media_io.MediaError(
+            "勾了「输出视频」但输入不是视频文件。请取消勾选，或改选输出音频格式。"
+        )
+    if trim_span is not None and (
+        trim_span.start_frame > 0 or trim_span.end_frame < original_frames
+    ):
+        raise media_io.MediaError(
+            "开了「裁剪首尾静音」且实际裁掉了内容：此时增强音频比视频短，"
+            "写回会产生音画时长不一致的文件。请取消裁剪，或改为输出音频。"
+        )
+    reason = media_io.remux_refusal_reason(os.path.splitext(media_path)[1])
+    if reason:
+        raise media_io.MediaError(reason + "　请改为输出音频。")
 
 
 def default_output_path(source_path: str, engine_id: str, project_root: str, ext: str = ".wav") -> str:

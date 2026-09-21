@@ -302,8 +302,13 @@ def reverb_verdict(result: dict) -> str:
 def decay_slope_delta(before: dict, after: dict) -> str | None:
     """降噪前后衰减斜率的变化说明。
 
-    DPDFNet 的训练信号模型里含房间冲激响应（x = s*r + n），所以它本来就在压混响。
-    如果降噪后斜率已被显著拉陡，说明混响大多已被吃掉，再去混响意义不大。
+    注意：早先这里写过「DPDFNet 的训练信号模型里含房间冲激响应，所以它本来就在
+    压混响」——那是**未验证的推断被当成事实写了**，已更正。DPDFNet 论文的定位是
+    causal single-channel speech enhancement，并未声称去混响。
+
+    斜率变陡说明有"尾巴"被压掉，但**不能**据此断言是去混响：降噪器的硬门限
+    （把停顿压成数字静音）同样会让斜率变陡。实测同一素材降噪前后 42 → 62 dB/s，
+    但发闷指数几乎不变（+16.13 → +16.68），说明它压的是噪声尾巴而非房间混响本身。
     """
     b = before.get("slope_db_per_s")
     a = after.get("slope_db_per_s")

@@ -5,12 +5,14 @@
 - `probe()`  只读探测，不解码整段：判定 kind、枚举音轨、读取参数。
 - `decode()` 解码为 numpy float32 数组。
 
-视频只取音轨，画面一律不碰；输出始终是音频。
+视频**默认**只取音轨、输出音频；也可以选择把增强后的音轨**写回视频**——
+那时画面与其它流原样复制、不重编码（见 `write_video_with_audio`）。
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -50,6 +52,64 @@ OUTPUT_FORMATS = [
     ("FLAC 24-bit（无损压缩）", ".flac"),
     ("MP3（有损，体积小）", ".mp3"),
 ]
+
+# ---------------------------------------------------------------------------
+# 把音轨写回视频（remux）
+# ---------------------------------------------------------------------------
+
+# 这些容器**明确拒绝**回写，宁可拒绝也不静默降级成重编码或换容器：
+#   .rmvb      rm muxer 能力很弱
+#   .vob       mpeg muxer 不重建 VOB 需要的 NAV 包
+#   .mpg/.mpeg MPEG-PS 里放 AAC 非标准
+#   .m4v       裸 MPEG-4 视频流，没有音轨语义
+REFUSE_REMUX_EXTS = {".rmvb", ".vob", ".mpg", ".mpeg", ".m4v"}
+
+# 容器 → 音频编码器。可用性为**实测**结果（2026-09-21，PyAV 18.1.0 / FFmpeg 8.1.2）：
+# aac / libopus / libmp3lame / wmav2 / ac3 / mp2 / flac 全部 OK；
+# libvorbis **不存在**（webm 因此走 libopus），原生 vorbis 可用但需要 experimental 模式。
+CONTAINER_AUDIO_CODECS = {
+    ".mp4": "aac", ".mov": "aac", ".3gp": "aac",
+    ".mkv": "aac", ".webm": "libopus",
+    ".avi": "libmp3lame", ".flv": "aac",
+    ".ts": "aac", ".m2ts": "aac",
+    ".wmv": "wmav2", ".asf": "wmav2",
+}
+
+# 容器 → muxer 名。显式给出而不靠文件名推断：临时文件的名字不是标准扩展名。
+MUXER_FOR_EXT = {
+    ".mp4": "mp4", ".mov": "mov", ".3gp": "3gp",
+    ".mkv": "matroska", ".webm": "webm",
+    ".avi": "avi", ".flv": "flv",
+    ".ts": "mpegts", ".m2ts": "mpegts",
+    ".wmv": "asf", ".asf": "asf",
+}
+
+
+def _human_size(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024.0
+    return f"{n:.1f} GB"
+
+
+def remux_supported_ext(ext: str) -> bool:
+    """该扩展名是否支持把音轨写回。"""
+    ext = ext.lower()
+    return ext in CONTAINER_AUDIO_CODECS and ext not in REFUSE_REMUX_EXTS
+
+
+def remux_refusal_reason(ext: str) -> str | None:
+    """返回拒绝原因；支持则返回 None。界面用它决定是否禁用选项。"""
+    ext = ext.lower()
+    if ext in REFUSE_REMUX_EXTS:
+        return (
+            f"{ext} 不支持把音轨写回：FFmpeg 对它的封装器能力不可靠，"
+            "写入可能静默丢流或产出打不开的文件。"
+        )
+    if ext not in CONTAINER_AUDIO_CODECS:
+        return f"不认识的目标容器 {ext}。"
+    return None
 
 
 class MediaError(RuntimeError):
@@ -498,3 +558,134 @@ def write_audio(
 
     sf.write(path, data, int(sample_rate), **kwargs)
     return path
+
+
+def write_video_with_audio(
+    src: str,
+    dst: str,
+    samples: np.ndarray,
+    sample_rate: int,
+    *,
+    replace_stream_index: int | None = None,
+) -> str:
+    """把音频写回视频容器：画面与其它流**原样复制**，只替换一条音轨。
+
+    - 视频流走 stream copy，不重编码 —— 画质零损失，且耗时接近磁盘拷贝。
+    - `replace_stream_index` 指定要替换的音轨（PyAV 流 index）；None = 第一条音轨。
+    - 其它流（视频、字幕、其余音轨）全部保留，并**手工补回** metadata 与 disposition：
+      `add_stream_from_template` 的 codec-context 路径只复制 codecpar/time_base/flags，
+      不补这两项会静默丢掉语言标签与 default/forced 标记，播放器可能猜错默认音轨。
+    - `dst` 与 `src` **不能是同一个文件**：同一路径既以 r 打开又被 w 截断会毁掉源视频。
+      入口硬断言，并且用「临时文件 + os.replace」原子写，绝不半截收场。
+    """
+    av = _av()
+    if os.path.abspath(src) == os.path.abspath(dst):
+        raise MediaError("拒绝把输出写到输入文件上：那会用写模式截断源视频，请换一个文件名。")
+
+    ext = os.path.splitext(dst)[1].lower()
+    reason = remux_refusal_reason(ext)
+    if reason:
+        raise MediaError(reason + "　请改为输出音频。")
+    codec = CONTAINER_AUDIO_CODECS[ext]
+    muxer = MUXER_FOR_EXT[ext]
+
+    arr = np.asarray(samples, dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr[:, None]
+    if arr.shape[1] > 2:
+        arr = to_mono(arr)[:, None]
+    n_ch = int(arr.shape[1])
+    layout = "mono" if n_ch == 1 else "stereo"
+    rate = int(sample_rate)
+
+    out_dir = os.path.dirname(os.path.abspath(dst)) or "."
+    os.makedirs(out_dir, exist_ok=True)
+
+    # 视频要原样复制，所以至少需要「源文件大小 + 余量」的空闲空间。低空间时提前拒绝，
+    # 而不是写到一半失败留下半个文件。
+    need = os.path.getsize(src) + 64 * 1024 * 1024
+    free = shutil.disk_usage(out_dir).free
+    if free < need:
+        raise MediaError(
+            f"磁盘空间不足：回写需要约 {_human_size(need)}（视频原样复制），"
+            f"目标盘只剩 {_human_size(free)}。"
+        )
+
+    tmp = f"{os.path.splitext(dst)[0]}.part{os.getpid()}{ext}"
+    try:
+        with av.open(src) as inc, av.open(tmp, "w", format=muxer) as outc:
+            vids = [st for st in inc.streams if st.type == "video"]
+            if len(vids) > 1:
+                raise MediaError(
+                    f"源文件含 {len(vids)} 条视频流，回写会静默丢流，已拒绝（请改为输出音频）。"
+                )
+            target = replace_stream_index
+            if target is None:
+                first = next((st for st in inc.streams if st.type == "audio"), None)
+                if first is None:
+                    raise MediaError("源文件没有音轨，无法替换。")
+                target = first.index
+            replaced = next((st for st in inc.streams if st.index == target), None)
+            if replaced is None or replaced.type != "audio":
+                raise MediaError(f"要替换的流 #{target} 不是音轨。")
+
+            keep = [st for st in inc.streams if st.index != target]
+            omap = {}
+            ast = None
+            # 按**源文件的流顺序**建输出流，并把新音轨放回被替换音轨原来的位置。
+            # 若先把保留的音轨全建完、再建新音轨，新音轨会排到最后，于是
+            # default_audio_index（第一条音轨）指向**没被处理的那条**——播放器
+            # 默认播的是旧音轨，与「替换音轨」的意图正好相反。实测踩过。
+            for st in inc.streams:
+                if st.index == target:
+                    ast = outc.add_stream(codec, rate=rate)
+                    ast.layout = layout
+                    ast.metadata.update(dict(st.metadata))   # 只能原地改，见注
+                    ast.disposition = st.disposition
+                    continue
+                if st.type not in ("video", "audio", "subtitle"):
+                    raise MediaError(
+                        f"源文件含 {st.type} 流，回写会丢流，已拒绝（请改为输出音频）。"
+                    )
+                ost = outc.add_stream_from_template(st)
+                # 必须**原地 update** 而不是 `ost.metadata = {...}`：PyAV 的
+                # Stream.__setattr__ 会把未知属性转发给 codec_context，而它没有
+                # metadata 属性，赋值会直接抛 AttributeError。而输出收尾时
+                # （Stream._finalize_for_output）读的就是这个 dict 对象本身，
+                # 原地改才生效。不补会静默丢掉语言标签与 default/forced 标记。
+                ost.metadata.update(dict(st.metadata))
+                ost.disposition = st.disposition
+                omap[st.index] = ost
+
+            # 所有流都必须在**第一次 mux 之前**建好：首次 mux 会写容器头部
+            # （avformat_write_header），之后再 add_stream 的流既不在头部里、
+            # time_base 也不会被初始化，mux 时会报 "Cannot rebase to zero time"。
+            for pkt in inc.demux(*keep):
+                if pkt.dts is None:          # flush 用的空包
+                    continue
+                pkt.stream = omap[pkt.stream.index]
+                outc.mux(pkt)                # timebase 换算由 PyAV 负责
+
+            step = max(1024, rate)           # 1 秒一块，避免一次构造整段 AudioFrame
+            pos = 0
+            total = int(arr.shape[0])
+            while pos < total:
+                chunk = np.ascontiguousarray(arr[pos:pos + step, :].T, dtype=np.float32)
+                frame = av.AudioFrame.from_ndarray(chunk, format="fltp", layout=layout)
+                frame.sample_rate = rate
+                frame.pts = pos              # 必须显式给 pts，否则时间戳不可靠
+                for pkt in ast.encode(frame):
+                    outc.mux(pkt)
+                pos += step
+            for pkt in ast.encode(None):     # flush
+                outc.mux(pkt)
+
+        os.replace(tmp, dst)                 # 原子收尾
+    except BaseException:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        raise
+    return dst

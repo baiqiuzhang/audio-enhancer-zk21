@@ -504,6 +504,15 @@ class MainWindow(QMainWindow):
         gp.addWidget(self.cmb_format, r, 1)
         r += 1
 
+        # 只有视频输入才有意义；在 _on_analyzed 里按探测结果启用/禁用。
+        # 刻意不做成 cmb_format 的一项：那个下拉同时被当作「音频扩展名表」，
+        # currentData() 会被直接写进 output_ext，混进视频容器会污染语义。
+        self.chk_video_out = QCheckBox("输出视频（把增强音轨写回原视频）")
+        self.chk_video_out.setEnabled(False)
+        self.chk_video_out.setToolTip("只有视频输入才能写回视频。")
+        gp.addWidget(self.chk_video_out, r, 0, 1, 2)
+        r += 1
+
         self.chk_autoexport = QCheckBox("处理完自动写出结果（输入目录 AudioEnhancer_zk21/）")
         self.chk_autoexport.setToolTip(
             "勾选后按命名规范写到输入文件所在目录的子文件夹里，并按参数指纹复用已有结果。\n"
@@ -1037,6 +1046,9 @@ class MainWindow(QMainWindow):
         self.cmb_stream.blockSignals(False)
         self.row_stream.setVisible(False)
         self._set_transport_enabled(False)
+        self.chk_video_out.setChecked(False)
+        self.chk_video_out.setEnabled(False)
+        self.chk_video_out.setToolTip("只有视频输入才能写回视频。")
         self._refresh_variants()
 
     # ------------------------------------------------------------------
@@ -1204,7 +1216,29 @@ class MainWindow(QMainWindow):
         if self._stream_index is None:
             self._stream_index = info.default_audio_index
 
-        kind = "视频（只取音轨，输出音频）" if info.is_video else "音频"
+        if info.is_video:
+            src_ext = os.path.splitext(self._media_path or "")[1].lower()
+            refusal = media_io.remux_refusal_reason(src_ext)
+            if refusal:
+                kind = "视频（该容器不支持写回，只能输出音频）"
+                self.chk_video_out.setChecked(False)
+                self.chk_video_out.setEnabled(False)
+                self.chk_video_out.setToolTip(refusal + "　只能输出音频。")
+            else:
+                kind = "视频（可只取音轨输出音频，也可把增强音轨写回视频）"
+                self.chk_video_out.setEnabled(True)
+                self.chk_video_out.setToolTip(
+                    "勾选后输出视频：画面**原样复制、不重新编码**（画质零损失），"
+                    "只把音轨换成增强后的音频；音轨按 "
+                    f"{media_io.CONTAINER_AUDIO_CODECS.get(src_ext, '?')} 编码。\n"
+                    "开了「裁剪首尾静音」且真的裁掉了内容时会拒绝写回"
+                    "（音频比视频短会让音画时长不一致）。"
+                )
+        else:
+            kind = "音频"
+            self.chk_video_out.setChecked(False)
+            self.chk_video_out.setEnabled(False)
+            self.chk_video_out.setToolTip("只有视频输入才能写回视频。")
         lines = [
             f"类型：{kind}    容器：{info.container}    时长：{_fmt_time(info.duration)}",
             f"解码：{info.decoder}    采样率：{data.sample_rate} Hz    声道：{data.channels}",
@@ -1298,6 +1332,15 @@ class MainWindow(QMainWindow):
     def _collect_options(self) -> pipeline.PipelineOptions:
         spec = self._selected_engine()
         ext = self.cmb_format.currentData() or ".wav"
+        # 写回视频时输出扩展名取**源容器**（不做容器转换，避免整个
+        # 「容器 × 编解码」矩阵的不确定性）；不支持的容器在 _on_analyzed 里已禁用。
+        video_out = bool(self.chk_video_out.isChecked())
+        if video_out and self._media_path:
+            src_ext = os.path.splitext(self._media_path)[1].lower()
+            if media_io.remux_supported_ext(src_ext):
+                ext = src_ext
+            else:
+                video_out = False
         # 刻意**不设** output_path：那是"导出语义"，会让流水线走显式路径分支，从而绕开
         # 命名规范、参数指纹与同参数复用（见 core/pipeline.py 里 output_path is None 那段）。
         # 自动写出改由 write_output 控制，落点是输入文件所在目录的 AudioEnhancer_zk21/ 子文件夹。
@@ -1314,6 +1357,7 @@ class MainWindow(QMainWindow):
             keep_channels=self.chk_stereo.isChecked(),
             output_rate=None,
             output_ext=ext,
+            video_out=video_out,
             write_output=self.chk_autoexport.isChecked(),
             highpass_hz=float(self.spn_highpass.value()),
             bwe_id=self.cmb_bwe.currentData(),
