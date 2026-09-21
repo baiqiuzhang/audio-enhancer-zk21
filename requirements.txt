@@ -23,3 +23,20 @@ numpy>=1.26,<3
 #   .venv\Scripts\python.exe -m pip install --pre audiosronnx
 # 它会带入 onnxruntime 与 scipy（实测 numpy 2.5.3 / soundfile 0.14.0 不受影响）。
 audiosronnx>=0.9.0a2
+
+# ---------------------------------------------------------------------------
+# GPU / CUDA 是**可选**的，所以刻意不写进上面的依赖表（默认纯 CPU 即可用）。
+# 实测结论（见 README「GPU / CUDA」）：只有带宽扩展值得上 GPU（快 1.5×），
+# sherpa 降噪上 GPU 会**慢 6.6×**。要试的话：
+#
+#   # CUDA 12.9 + cuDNN 9.26 随 wheel 一起装（约 1.82 GB）。
+#   # 务必加镜像：默认源实测只有 256 KB/s，装完要 2 小时以上。
+#   .venv\Scripts\python.exe -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple "onnxruntime-gpu[cuda,cudnn]==1.26.0"
+#
+# 选 1.26.0（按 CUDA 12.8 构建）而不是最新的 1.30.0（按 CUDA 13 构建）：这样能和
+# sherpa 的 +cuda12.cudnn9 GPU wheel 共用同一套 CUDA 12 运行库，省掉第二套 1.8 GB。
+#
+# 注意 pip 的 onnxruntime-gpu 对 sherpa **毫无帮助**：sherpa 捆绑自己的 ORT DLL，
+# 要它上 GPU 得换 +cuda12.cudnn9 的 wheel（而实测那只会让降噪更慢）。
+# 回退步骤见 README「GPU / CUDA → 回退」。
+# ---------------------------------------------------------------------------

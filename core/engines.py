@@ -23,7 +23,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import dsp, media_io
+from . import cuda_env, dsp, media_io
 from .modelstore import (
     Catalog,
     DownloadError,
@@ -48,6 +48,15 @@ MAX_FRAMES_SINGLE_PASS = 72_000_000
 @dataclass
 class EngineParams:
     num_threads: int = 2
+    # 推理设备。"auto" = 让**实测**决定，而不是"有 GPU 就上 GPU"。实测（2026-09-21，
+    # RTX 4060 Laptop，真实素材，各重复 2–3 次）：
+    #   · 带宽扩展（NovaSR）：CPU RTF 0.083 → CUDA 0.053，**快 1.55×** → auto 选 CUDA；
+    #   · sherpa 降噪（DPDFNet2）：CPU RTF 0.126 → CUDA 0.842，**慢 6.6×** → auto 选 CPU
+    #     （逐帧流式模型 + 极小 kernel，GPU 启动/同步延迟盖过算力收益）。
+    # 两个参数都**不进指纹**：设备只影响速度，结果差异在 0.01%–0.5% RMS 量级
+    # （见 README「GPU / CUDA」一节与 tests/check_gpu.py 的实测）。
+    bwe_device: str = "auto"          # 带宽扩展（audiosronnx → onnxruntime）
+    sherpa_provider: str = "auto"     # sherpa-onnx（GTCRN / DPDFNet）
     # sherpa DPDFNet
     attenuation_limit_db: float = 12.0
     # DeepFilterNet
@@ -147,6 +156,85 @@ class BaseEngine:
     def release(self) -> None:
         """释放常驻资源（模型句柄）。"""
 
+    def provider_desc(self) -> str | None:
+        """**实际**生效的推理设备说明；None = 该实现不涉及（DSP / exe）。"""
+        return None
+
+
+# ---------------------------------------------------------------------------
+# 推理设备：拿不到 GPU 就回落 CPU，并把"实际用了什么"报出来
+# ---------------------------------------------------------------------------
+
+def _probe_sherpa_cuda() -> bool:
+    """当前 sherpa-onnx 是否带 CUDA 支持——用**二进制证据**判断，不猜版本号。
+
+    实测（2026-09-21）：CPU-only wheel 的包里没有任何 `*providers_cuda*` 文件，
+    二进制里是 "Please compile with -DSHERPA_ONNX_ENABLE_GPU=ON"；GPU wheel 才会
+    带 `onnxruntime_providers_cuda.dll`。
+    """
+    try:
+        import sherpa_onnx  # noqa: PLC0415
+
+        pkg = os.path.dirname(os.path.abspath(sherpa_onnx.__file__))
+    except Exception:
+        return False
+    for _root, _dirs, files in os.walk(pkg):
+        if any("providers_cuda" in f.lower() for f in files):
+            return True
+    return False
+
+
+_sherpa_cuda_cache: bool | None = None
+
+
+def sherpa_cuda_available() -> bool:
+    global _sherpa_cuda_cache
+    if _sherpa_cuda_cache is None:
+        _sherpa_cuda_cache = _probe_sherpa_cuda()
+    return _sherpa_cuda_cache
+
+
+def resolve_sherpa_provider(want: str = "auto") -> tuple[str, str]:
+    """(provider 字符串, 说明)。sherpa 只接受**单个** provider，所以回退在这一层做。
+
+    **实测（2026-09-21，RTX 4060 Laptop，DPDFNet2，48 kHz 素材的 30 s 与 60 s 片段，
+    各重复 2–3 次）：**
+
+    | 设备 | 30 s 片段 | 60 s 片段 | RTF |
+    | --- | --- | --- | --- |
+    | CPU | 3.79 / 3.90 s | 12.08 s | 0.126–0.130 |
+    | CUDA | 25.18 / 25.26 / 25.41 s | 75.50 s | 0.839–0.847 |
+
+    **即 GPU 慢 6.3–6.6 倍**，三次重复的方差只有 ±0.5%，且比值与音频长度无关——所以
+    这不是首次初始化开销，而是模型性质：DPDFNet 是逐帧带状态的流式模型，每帧要发
+    大量极小的 kernel，GPU 的 kernel 启动与同步延迟盖过了算力收益。
+
+    因此 `"auto"` **明确选择 CPU**（不做"有 GPU 就上 GPU"的傻事），要覆盖必须显式
+    传 `"cuda"`。这条结论比"能不能跑在 GPU 上"更重要——能跑不等于值得跑。
+    """
+    if want == "cpu":
+        return "cpu", "CPU（显式指定）"
+    if want == "auto":
+        return "cpu", (
+            "CPU（自动判定：**实测 DPDFNet 在 CUDA 上比 CPU 慢 6.3–6.6 倍**，"
+            "所以不自动上 GPU；确实要在 GPU 上跑请显式选 cuda）"
+        )
+    if not sherpa_cuda_available():
+        return "cpu", (
+            "CPU（**请求了 CUDA，但当前 sherpa-onnx 是 CPU-only 构建**："
+            "包里没有 onnxruntime_providers_cuda.dll，需换 +cuda12.cudnn9 的 GPU wheel）"
+        )
+    cuda_env.activate()
+    dirs = cuda_env.usable_dirs()
+    if not dirs:
+        return "cpu", ("CPU（sherpa 带 CUDA，但缺 CUDA/cuDNN 运行库："
+                       + ", ".join(cuda_env.missing()) + "）")
+    vram_ok, why = cuda_env.vram_ok()
+    if not vram_ok:
+        return "cpu", f"CPU（**显存不足，未上 GPU**：{why}）"
+    return "cuda", (f"CUDA（{why}；CUDA/cuDNN 运行库取自 {dirs[0]}）"
+                    "——**注意实测这一档反而慢 6.3–6.6 倍**，仅用于对比与实验")
+
 
 # ---------------------------------------------------------------------------
 # DSP 基线
@@ -190,9 +278,24 @@ class SherpaEngine(BaseEngine):
         self._denoiser = None
         self._key: tuple | None = None
         self._out_rate: int | None = None
+        self._provider_desc: str = ""
+        # CUDA 会话创建失败过就不再重试。否则每次 process() 都会按 "cuda" 重建
+        # 会话、每次都失败、每次再回落一遍 —— 白白多付一次失败的开销。
+        self._cuda_failed = False
+        self._cuda_fail_reason = ""
+
+    def provider_desc(self) -> str | None:
+        return self._provider_desc or None
 
     def _build(self, params: EngineParams):
-        key = (params.num_threads, float(params.attenuation_limit_db))
+        want = getattr(params, "sherpa_provider", "auto")
+        if want == "cuda" and self._cuda_failed:
+            provider, prov_desc = "cpu", (
+                f"CPU（**CUDA 会话创建失败后回落**：{self._cuda_fail_reason}）"
+            )
+        else:
+            provider, prov_desc = resolve_sherpa_provider(want)
+        key = (params.num_threads, float(params.attenuation_limit_db), provider)
         if self._denoiser is not None and self._key == key:
             return self._denoiser
 
@@ -202,25 +305,45 @@ class SherpaEngine(BaseEngine):
         if not os.path.isfile(path):
             raise DownloadError(f"模型文件缺失：{path}")
 
-        common = dict(num_threads=int(params.num_threads), debug=False, provider="cpu")
-        if self.spec.sherpa_type == "gtcrn":
-            model = sherpa_onnx.OfflineSpeechDenoiserModelConfig(
-                gtcrn=sherpa_onnx.OfflineSpeechDenoiserGtcrnModelConfig(model=path), **common
-            )
-        else:
-            model = sherpa_onnx.OfflineSpeechDenoiserModelConfig(
-                dpdfnet=sherpa_onnx.OfflineSpeechDenoiserDpdfNetModelConfig(
-                    model=path, attenuation_limit_db=float(params.attenuation_limit_db)
-                ),
-                **common,
-            )
+        def make_cfg(prov: str):
+            common = dict(num_threads=int(params.num_threads), debug=False, provider=prov)
+            if self.spec.sherpa_type == "gtcrn":
+                model = sherpa_onnx.OfflineSpeechDenoiserModelConfig(
+                    gtcrn=sherpa_onnx.OfflineSpeechDenoiserGtcrnModelConfig(model=path),
+                    **common,
+                )
+            else:
+                model = sherpa_onnx.OfflineSpeechDenoiserModelConfig(
+                    dpdfnet=sherpa_onnx.OfflineSpeechDenoiserDpdfNetModelConfig(
+                        model=path, attenuation_limit_db=float(params.attenuation_limit_db)
+                    ),
+                    **common,
+                )
+            return sherpa_onnx.OfflineSpeechDenoiserConfig(model=model)
 
-        cfg = sherpa_onnx.OfflineSpeechDenoiserConfig(model=model)
+        cfg = make_cfg(provider)
         if not cfg.validate():
             raise DownloadError(f"模型配置校验失败：{cfg}")
 
-        self._denoiser = sherpa_onnx.OfflineSpeechDenoiser(cfg)
+        try:
+            self._denoiser = sherpa_onnx.OfflineSpeechDenoiser(cfg)
+        except Exception as exc:
+            if provider != "cuda":
+                raise
+            # GPU 会话创建失败（驱动太旧 / DLL 缺失 / 显存不足）。**回落 CPU 而不是
+            # 让整个降噪不可用**，但把原因写进 provider_desc —— 上层会记进日志，
+            # 不做静默降级。
+            cfg_cpu = make_cfg("cpu")
+            if not cfg_cpu.validate():
+                raise
+            self._denoiser = sherpa_onnx.OfflineSpeechDenoiser(cfg_cpu)
+            key = (params.num_threads, float(params.attenuation_limit_db), "cpu")
+            self._cuda_failed = True
+            self._cuda_fail_reason = f"{type(exc).__name__}: {str(exc)[:200]}"
+            prov_desc = f"CPU（**CUDA 会话创建失败后回落**：{self._cuda_fail_reason}）"
+
         self._key = key
+        self._provider_desc = prov_desc
         return self._denoiser
 
     def _run_once(self, mono: np.ndarray, sample_rate: int, params: EngineParams) -> np.ndarray:
@@ -373,6 +496,12 @@ class BweEngine(BaseEngine):
 
     kind = "bwe"
 
+    def provider_desc(self) -> str | None:
+        from . import bwe  # noqa: PLC0415
+
+        info = bwe.last_device()
+        return info.get("desc") or None
+
     def process(self, mono, sample_rate, params, *, cutoff_hz=None, hf_target_db=None,
                 progress=None, cancel=None):
         from . import bwe  # 局部导入：audiosronnx 未安装时其余功能仍可用
@@ -384,6 +513,7 @@ class BweEngine(BaseEngine):
             kw["hf_target_db"] = float(hf_target_db)
         y, rate = bwe.upscale(
             self.spec.id, self.catalog, mono, sample_rate,
+            device=getattr(params, "bwe_device", "auto"),
             progress=progress, cancel=cancel, **kw,
         )
         return np.asarray(y, dtype=np.float32), int(rate)

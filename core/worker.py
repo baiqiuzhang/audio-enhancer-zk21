@@ -9,7 +9,6 @@ core/ 下的模块刻意不依赖 Qt，这里只做信号转发与取消标志�
 
 from __future__ import annotations
 
-import ctypes
 import os
 import threading
 import time
@@ -19,6 +18,7 @@ from dataclasses import dataclass, field
 from PyQt5.QtCore import QObject, QThread, pyqtSignal as Signal
 
 from . import dsp, media_io, outputs, pipeline
+from .sysinfo import available_memory_bytes, human_gb
 from .engines import Cancelled
 from .modelstore import Catalog, DownloadCancelled, DownloadError, download_files
 
@@ -26,36 +26,6 @@ from .modelstore import Catalog, DownloadCancelled, DownloadError, download_file
 # 带宽扩展模型 400–700 MB，所以并发数必须按内存收敛，而不是按 CPU 核数）
 MIN_FREE_FOR_ANY = 0.8 * 1024**3      # 低于此值直接拒绝启动批次
 MIN_FREE_FOR_PARALLEL = 1.5 * 1024**3  # 低于此值降到 1 个 worker
-
-
-def available_memory_bytes() -> int:
-    """可用物理内存（字节）。用 ctypes 直调，避免引入 psutil 依赖。"""
-
-    class MEMORYSTATUSEX(ctypes.Structure):
-        _fields_ = [
-            ("dwLength", ctypes.c_ulong),
-            ("dwMemoryLoad", ctypes.c_ulong),
-            ("ullTotalPhys", ctypes.c_ulonglong),
-            ("ullAvailPhys", ctypes.c_ulonglong),
-            ("ullTotalPageFile", ctypes.c_ulonglong),
-            ("ullAvailPageFile", ctypes.c_ulonglong),
-            ("ullTotalVirtual", ctypes.c_ulonglong),
-            ("ullAvailVirtual", ctypes.c_ulonglong),
-            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-        ]
-
-    try:
-        stat = MEMORYSTATUSEX()
-        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-            return int(stat.ullAvailPhys)
-    except Exception:
-        pass
-    return 0
-
-
-def human_gb(n: int) -> str:
-    return f"{n / 1024**3:.2f} GB"
 
 
 def safe_worker_count(requested: int) -> tuple[int, str | None]:

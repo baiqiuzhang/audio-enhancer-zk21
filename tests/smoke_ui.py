@@ -19,13 +19,45 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SAMPLE = os.path.join(ROOT, "samples", "speech_with_noise.wav")
 
-from PyQt5.QtWidgets import QApplication  # noqa: E402
+from PyQt5.QtCore import QPoint, QPointF, Qt  # noqa: E402
+from PyQt5.QtGui import QWheelEvent  # noqa: E402
+from PyQt5.QtWidgets import (  # noqa: E402
+    QAbstractScrollArea,
+    QAbstractSlider,
+    QAbstractSpinBox,
+    QApplication,
+    QComboBox,
+)
 
 from core import media_io  # noqa: E402
 from ui.main_window import MainWindow  # noqa: E402
 from ui.player import ENHANCED, SOURCE  # noqa: E402
 
 failures: list[str] = []
+
+
+def make_wheel(delta: int = -120) -> QWheelEvent:
+    """构造一个滚轮事件（PyQt5 用 QPointF 版的位置参数）。"""
+    return QWheelEvent(QPointF(5.0, 5.0), QPointF(5.0, 5.0), QPoint(0, 0), QPoint(0, delta),
+                       Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+
+
+def widget_value(w):
+    """控件的"值"（下拉框取 index，滑块取整数，数字框取浮点）。"""
+    if isinstance(w, QComboBox):
+        return w.currentIndex()
+    if isinstance(w, QAbstractSlider):
+        return int(w.value())
+    return float(w.value())
+
+
+def enclosing_scroll(w):
+    p = w.parentWidget()
+    while p is not None:
+        if isinstance(p, QAbstractScrollArea):
+            return p
+        p = p.parentWidget()
+    return None
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -63,6 +95,87 @@ def main() -> int:
           win._selected_engine().id)
     check("未导入文件时「开始处理」禁用", not win.btn_run.isEnabled())
     check("未处理时「导出」禁用", not win.act_export.isEnabled())
+
+    print("\n1b. 滚轮护栏：无焦点时滚轮不得改参数（应交给页面滚动）")
+    win.list_engines.setFocus()
+    app.processEvents()
+    targets: list = []
+    for cls in (QComboBox, QAbstractSpinBox, QAbstractSlider):
+        targets.extend([w for w in win.findChildren(cls) if w.isEnabled()])
+    check("确实找到了选择类控件（下拉框/数字框/滑块）", len(targets) >= 8,
+          f"{len(targets)} 个")
+    before = {id(w): widget_value(w) for w in targets}
+    for w in targets:
+        if w.hasFocus():
+            continue                     # 有焦点时按设计允许微调，这里只测无焦点的情况
+        QApplication.sendEvent(w, make_wheel(-120))
+        QApplication.sendEvent(w, make_wheel(+120))
+    app.processEvents()
+    changed = [w for w in targets if widget_value(w) != before[id(w)]]
+    check("无焦点时滚轮不改动任何选择类控件",
+          not changed,
+          f"被改动的：{[f'{type(w).__name__}' for w in changed][:6]}")
+
+    # 反向确认：没有护栏时是会变的（否则上一条可能只是"滚轮事件没送到"）
+    from ui.wheel_guard import WheelGuard  # noqa: PLC0415
+    guard = win._wheel_guard
+    probe = targets[0]
+    probe.removeEventFilter(guard)
+    v0 = widget_value(probe)
+    QApplication.sendEvent(probe, make_wheel(-120))
+    app.processEvents()
+    check("（反向验证）摘掉护栏后同一个控件确实会被滚轮改动",
+          widget_value(probe) != v0, f"{v0} → {widget_value(probe)}")
+    probe.installEventFilter(guard)
+    probe.setFocusPolicy(probe.focusPolicy())      # 保持原状
+
+    # 有焦点时仍可微调（保住"用户点过它、想用滚轮微调"的用法）
+    probe.setFocus()
+    app.processEvents()
+    if probe.hasFocus():
+        v1 = widget_value(probe)
+        QApplication.sendEvent(probe, make_wheel(-120))
+        app.processEvents()
+        check("有焦点时滚轮仍可微调（原生行为保留）",
+              widget_value(probe) != v1, f"{v1} → {widget_value(probe)}")
+    else:
+        print("  [跳过]  该环境下拿不到焦点，「有焦点时可微调」未验证")
+    win.list_engines.setFocus()
+    app.processEvents()
+
+    # 滚轮应交给外层滚动区（把窗口缩到最小尺寸，让左栏必然出现滚动范围）
+    area = enclosing_scroll(probe)
+    saved = win.size()
+    win.resize(1000, 560)
+    app.processEvents()
+    if area is not None and area.verticalScrollBar().maximum() > 0:
+        sb = area.verticalScrollBar()
+        sb.setValue(0)
+        app.processEvents()
+        v_before = sb.value()
+        QApplication.sendEvent(probe, make_wheel(-120))
+        app.processEvents()
+        check("滚轮被交给页面滚动区（页面确实滚动了）",
+              sb.value() > v_before, f"滚动条 {v_before} → {sb.value()}")
+    else:
+        print("  [跳过]  该尺寸下左栏无需滚动，未验证「交给滚动区」这一条")
+    win.resize(saved)
+    app.processEvents()
+
+    # 恢复现场：本节为了做"反向验证"和"有焦点"两次确认，**故意**改动过控件值。
+    # 不恢复的话后续处理会用被改过的参数——实测踩过：把「带宽扩展」从"关闭"改成开启，
+    # 于是后面的"长度对齐"断言失败。那是本测试的副作用，不是应用的问题。
+    for w in targets:
+        v = before[id(w)]
+        if widget_value(w) != v:
+            if isinstance(w, QComboBox):
+                w.setCurrentIndex(int(v))
+            else:
+                w.setValue(v)
+    app.processEvents()
+    left = [w for w in targets if widget_value(w) != before[id(w)]]
+    check("本节结束后所有控件已恢复原值（测试不留副作用）", not left,
+          f"未恢复的：{[type(w).__name__ for w in left][:6]}")
 
     print("\n2. 导入（走后台分析线程）")
     win._import_file(SAMPLE)

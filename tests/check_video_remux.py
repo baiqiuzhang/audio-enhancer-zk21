@@ -228,6 +228,58 @@ def check_remux(tmp: str) -> None:
           0.3 < rms(back.samples) / max(rms(tone(800, 2.0)), 1e-9) < 0.7,
           f"RMS 比 {rms(back.samples) / max(rms(tone(800, 2.0)), 1e-9):.3f}")
 
+    # --- 「回写之后再处理，读的是哪条音轨？」 -------------------------------
+    # 用户会关心这一点：回写产生了一个音轨已被替换的视频，那么**下一次处理同一个源文件**
+    # 时，读到的必须是**最初的原始音轨**，而不是上一次写回去的那条——否则每跑一次都会在
+    # 上一次的结果上继续叠加，越跑越糟。
+    section("2b. 回写之后，再次处理读的是原始音轨（不是写回去的那条）")
+    pristine = media_io.decode(src, media_io.probe(src).default_audio_index)
+    pre_rms = rms(pristine.samples)
+    check("原始音轨电平就是 300 Hz 正弦那一档（0.25 幅度）",
+          0.15 < pre_rms < 0.22, f"RMS {pre_rms:.4f}")
+
+    run_src = pipeline_run_source(src, tmp)
+    if run_src is None:
+        check("二次处理能拿到「原音」", False, "流水线未返回结果")
+    else:
+        same_len = len(run_src.samples) == len(pristine.samples)
+        identical = same_len and bool(
+            np.array_equal(np.asarray(run_src.samples, dtype=np.float32),
+                           np.asarray(pristine.samples, dtype=np.float32))
+        )
+        check("二次处理读到的「原音」与最初的原始音轨**逐样本一致**",
+              identical,
+              f"{len(run_src.samples)} vs {len(pristine.samples)} 帧"
+              + ("" if same_len else "（长度都不同）"))
+        check("二次处理读到的不是回写进去的那条（电平不是 0.5 倍那一档）",
+              rms(run_src.samples) > 1.5 * rms(media_io.decode(dst, media_io.probe(dst).default_audio_index).samples),
+              f"原音 RMS {rms(run_src.samples):.4f} vs 回写音轨 "
+              f"{rms(media_io.decode(dst, media_io.probe(dst).default_audio_index).samples):.4f}")
+
+    # 另一条容易混淆的路径：把**回写产物本身**当新输入导入 → 读到的当然是它自己的音轨
+    # （就是增强后的那条）。这是预期行为，明确记下来以免被误认为缺陷。
+    run_back = pipeline_run_source(dst, tmp)
+    if run_back is not None:
+        check("把回写产物当新输入时，读到的就是它自己的音轨（增强后的那条）",
+              0.3 < rms(run_back.samples) / max(rms(tone(800, 2.0)), 1e-9) < 0.7,
+              f"RMS {rms(run_back.samples):.4f}")
+
+
+def pipeline_run_source(path: str, tmp: str):
+    """跑一遍真流水线（不写盘），返回它解出来的「原音」。"""
+    cat = modelstore.load_catalog(ROOT)
+    opts = pipeline.PipelineOptions(
+        engine_id="dsp_baseline",
+        engine=pipeline.EngineParams(num_threads=1),
+        trim_silence=False, highpass_hz=0.0, normalize=False,
+        keep_channels=False, write_output=False, reuse_existing=False,
+    )
+    try:
+        return pipeline.run(path, cat, opts).source
+    except Exception as exc:                                    # noqa: BLE001
+        print(f"    [注意] 流水线运行失败：{type(exc).__name__}: {exc}")
+        return None
+
 
 def check_refusals(tmp: str) -> None:
     section("3. 拒绝条件（宁可明确报错，不静默降级）")

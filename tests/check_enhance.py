@@ -22,7 +22,7 @@ import soundfile as sf
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import enhance, media_io, modelstore, outputs, pipeline, wpe  # noqa: E402
+from core import bwe, enhance, media_io, modelstore, outputs, pipeline, wpe  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SAMPLE = os.path.join(ROOT, "samples", "speech_with_noise.wav")
@@ -364,6 +364,107 @@ def check_pipeline_stages(cat, skip_bwe: bool) -> None:
                   hi_st < 0.0, f"8k+ 相对通带 {hi_st:+.1f} dB（目标 ≈ −12）")
 
 
+def check_hf_boost_guard() -> None:
+    """带宽扩展的频段平衡**只许压、不许抬**（`bwe.MAX_HF_BOOST_DB`）。
+
+    为什么要单独守这一条：平衡规则「把生成频段压到通带之下 `hf_target_db`」是一个**绝对
+    电平目标**，本身不带方向性。当模型原始输出本来就安静时，它会反过来变成巨额放大——
+    实测（2026-09-21，真实素材经 deepfilternet3 降噪后）novaSR 的原始高频比通带低约
+    42–55 dB，平衡据此算出 g_hf = **+31.56 dB**，把模型的宽带本底整体抬高，听感就是
+    "贴在原本音频上的一层高频嗡嗡声"（用户报告）。
+
+    这里用**合成信号**把两个方向都钉住，不依赖具体素材：
+      · 模型几乎不产高频 → 增益不得 > 1（不许放大）；
+      · 模型产得过量     → 增益必须衰减，且平衡后高频落到通带之下（原修复不被破坏）。
+    """
+    section("4c. 生成频段增益「只压不抬」的护栏（合成信号，不依赖素材）")
+    rng = np.random.default_rng(11)
+    sr = 48000                       # 必须用 48 kHz：8 kHz 以上才有真实频带可测
+    n = sr * 5
+    freqs = np.fft.rfftfreq(n, 1 / sr)
+    x_ref = (rng.standard_normal(n) * 0.1).astype(np.float32)      # 参考：宽带白噪声
+
+    # 情形 A：模型输出**几乎没有高频**——把 4 kHz 以上整体压低 60 dB
+    spec = np.fft.rfft(x_ref)
+    spec[freqs >= 4000] *= 10 ** (-60 / 20)
+    y_quiet = np.fft.irfft(spec, n).astype(np.float32)
+    g_low_a, g_hf_a = bwe.balance_gains(y_quiet, sr, x_ref, sr)
+    check("模型几乎不产高频时：通带增益仍是有限正值（对齐照旧）",
+          np.isfinite(g_low_a) and g_low_a > 0.0, f"g_low={g_low_a:.4f}")
+    check("模型几乎不产高频时：生成频段增益**不得放大**（≤ 1.0）",
+          g_hf_a <= 1.0 + 1e-9,
+          f"g_hf={g_hf_a:.6f}（{20 * np.log10(max(g_hf_a, 1e-9)):+.2f} dB）")
+
+    # 情形 B：模型把高频抬得远高于通带（模拟"只剩高频"那类输出）
+    hf_only = np.fft.rfft(rng.standard_normal(n) * 3.0)
+    hf_only[(freqs < 8000) | (freqs >= 24000)] = 0
+    y_loud = (x_ref + np.fft.irfft(hf_only, n)).astype(np.float32)
+    g_low_b, g_hf_b = bwe.balance_gains(y_loud, sr, x_ref, sr)
+    check("模型高频过量时：生成频段增益必须衰减（< 1.0）",
+          g_hf_b < 0.999,
+          f"g_hf={g_hf_b:.6f}（{20 * np.log10(max(g_hf_b, 1e-9)):+.2f} dB）")
+    bal = bwe.apply_balance(y_loud, sr, g_low_b, g_hf_b)
+    f_b, P_b = psd(bal, sr)
+    # 频带要**避开 8 kHz 附近的过渡区**：apply_balance 在那里是 g_low↔g_hf 的平滑过渡，
+    # 把过渡区算进来会让测得的"带增益"偏离名义值（实测过一次，是口径问题不是函数问题）。
+    hi_b = band_db(f_b, P_b, 12000, 24000) - band_db(f_b, P_b, 20, 6000)
+    check("模型高频过量时：平衡后高频落到通带之下（原修复不被破坏）",
+          hi_b < 0.0, f"12k–24k 相对通带(20–6k) {hi_b:+.1f} dB（目标 ≈ −12）")
+
+
+def check_bwe_memory_guard() -> None:
+    """带宽扩展的内存护栏：按引擎给块长 + 跑之前预检（不够就明确拒绝）。
+
+    背景（实测，2026-09-22）：hifiganbwe 的峰值驻留是 **430 MB / 每秒块长**——默认
+    20 s 块要 7.5 GB，在空闲内存 4 GB 的机器上必然失败（实测两次单次分配失败）。
+    而 novasr 只要 62 MB/s、lavasr 16 MB/s。修法两条：hifiganbwe 降到 2 s 块
+    （输出只差 0.07% 相对 RMS），以及跑前按实测成本预检、不够就拒绝。
+    """
+    section("4d. 带宽扩展的内存护栏（按引擎块长 + 事前预检）")
+    check("hifiganbwe 用更小的块长（2 s，峰值约 2.0 GB 而不是 7.5 GB）",
+          bwe.chunk_seconds("hifiganbwe") == 2.0, f"{bwe.chunk_seconds('hifiganbwe')}s")
+    check("其余引擎保持默认块长（20 s）",
+          bwe.chunk_seconds("novasr") == bwe.CHUNK_S and bwe.chunk_seconds("lavasr") == bwe.CHUNK_S,
+          f"{bwe.chunk_seconds('novasr')}s")
+    # 估算模型必须**贴近实测**（拟合点见 core/bwe.py 的表）：偏低估会让预检放行一个
+    # 实际跑不动的请求 —— 那正是这个护栏要防的方向。
+    est2 = bwe.estimate_peak_mb("hifiganbwe", 2.0)
+    est20 = bwe.estimate_peak_mb("hifiganbwe", 20.0)
+    check("成本估算贴近实测且随块长线性增长（2 s→约 2.0 GB、20 s→约 7.5 GB）",
+          1900 < est2 < 2600 and est20 > 7000,
+          f"2s→{est2:.0f} MB（实测 2042），20s→{est20:.0f} MB（实测 7509）")
+    check("novaSR 的估算也贴近实测（20 s→约 1.24 GB）",
+          1100 < bwe.estimate_peak_mb("novasr", 20.0) < 1700,
+          f"{bwe.estimate_peak_mb('novasr', 20.0):.0f} MB（实测 1242）")
+
+    cat = modelstore.load_catalog(ROOT)
+    x = (np.random.default_rng(3).standard_normal(16000) * 0.05).astype(np.float32)   # 1 s
+    real_free = bwe.sysinfo.available_memory_mb
+    try:
+        bwe.sysinfo.available_memory_mb = lambda: 1.0            # 假装只剩 1 MB
+        try:
+            bwe.upscale("novasr", cat, x, 16000, device="cpu")
+            check("内存不足时必须**明确拒绝**（而不是留给 ORT 深处随机失败）",
+                  False, "本该抛 BweUnavailable 却成功了")
+        except bwe.BweUnavailable as exc:
+            check("内存不足时必须**明确拒绝**（而不是留给 ORT 深处随机失败）",
+                  "内存" in str(exc), str(exc).splitlines()[0][:88])
+        except Exception as exc:                                  # noqa: BLE001
+            check("内存不足时必须**明确拒绝**（而不是留给 ORT 深处随机失败）",
+                  False, f"抛了 {type(exc).__name__}：{exc}")
+
+        bwe.sysinfo.available_memory_mb = lambda: 0.0            # 取不到内存信息 = 未知
+        try:
+            y, _ = bwe.upscale("novasr", cat, x, 16000, device="cpu")
+            check("取不到内存信息时**放行**（不能因为探测失败就把功能全拒掉）",
+                  y.size > 0, f"{len(y)} 帧")
+        except bwe.BweUnavailable as exc:
+            check("取不到内存信息时**放行**（不能因为探测失败就把功能全拒掉）",
+                  False, f"被拒了：{exc}")
+    finally:
+        bwe.sysinfo.available_memory_mb = real_free
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-bwe", action="store_true")
@@ -379,6 +480,8 @@ def main() -> int:
     check_reverb_indicator()
     check_wpe()
     check_pipeline_stages(cat, args.skip_bwe)
+    check_hf_boost_guard()
+    check_bwe_memory_guard()
 
     print()
     if failures:

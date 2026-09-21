@@ -53,7 +53,8 @@ def _effective_rate(in_rate: int, n_in: int, n_out: int,
 
     实测（2026-09-21）：sherpa 的 DPDFNet 喂 48 kHz 时**上报 16000 Hz，却返回与
     输入相同样本数**的 48 kHz 数据——灌 1 kHz 正弦进去，按 48000 Hz 回读仍是
-    1000.1 Hz，长度比 1.0000。项目 README 里「输出率 = 模型原生率」的说法是错的。
+    1000.1 Hz，长度比 1.0000。（早先把「输出率 = 模型原生率」当成事实办事，
+    那条推断是错的；本文档从未写过这句。）
 
     这个不一致正是下游带宽扩展被搞坏的源头：拿 16000 当 48 kHz 数据的率去重采样，
     等于把整个频谱上移 3 倍。用长度比推断对 DeepFilterNet（16k 输入→48k 数据，
@@ -158,6 +159,12 @@ class PipelineResult:
     variant_label: str = ""
     reused: bool = False                 # True = 直接复用了已有文件，没有重算
     stages: list[str] = field(default_factory=list)
+    # 分阶段耗时（秒），键见 _STAGE_LABELS。用于定位瓶颈，不进指纹。
+    stage_times: dict[str, float] = field(default_factory=dict)
+    # 各推理阶段**实际**用的设备说明（如 "CUDA（空闲显存…）" / "CPU（…回落…）"）。
+    # 单独成字段而不是只走 note()：单文件模式不传 log=，note() 会被丢弃，
+    # 那样"实际用了哪个设备"在用户最常用的路径上就看不见了。
+    device_notes: list[str] = field(default_factory=list)
     # --- 混响指标（Phase 5）--------------------------------------------
     reverb_slope_db_s: float | None = None
 
@@ -229,6 +236,59 @@ def _check(cancel: CancelCb | None) -> None:
         raise Cancelled("已取消")
 
 
+# 分阶段耗时的显示名。键是机器友好的 ASCII（写进 manifest / 测试断言用），
+# 中文只用于日志展示。
+_STAGE_LABELS = {
+    "decode": "解码",
+    "trim": "静音裁剪",
+    "prep": "前处理",
+    "denoise": "降噪推理",
+    "bwe": "带宽扩展",
+    "eq": "听感EQ",
+    "compress": "压缩",
+    "resample": "重采样",
+    "align": "时长对齐",
+    "stats": "电平统计",
+    "normalize_out": "输出归一化",
+    "reverb": "混响指标",
+    "write": "写出",
+    "reuse": "复用读取",
+}
+
+
+class _StageTimer:
+    """分阶段耗时累计器。
+
+    此前流水线只记录了**总**耗时，于是"瓶颈在推理、还是在解码 / 重采样 / 被内存
+    压到单并发"无法回答——而 GPU 选型（值不值得为此换 sherpa 的 GPU wheel）恰恰
+    要靠这个数字决定。所以先补齐测量，再动 GPU。
+
+    另一处口径澄清：`PipelineResult.elapsed` 与 `rtf` 取的是**写出之前**的时刻，
+    所以它们不含写盘时间（310 MB 的 wav 写出可观）。写出时间单独记在 "write" 里，
+    要比较"总墙钟"就用 summary() 里的合计值。
+    """
+
+    def __init__(self) -> None:
+        self.t0 = time.perf_counter()
+        self.last = self.t0
+        self.times: dict[str, float] = {}
+
+    def mark(self, name: str) -> None:
+        now = time.perf_counter()
+        self.times[name] = self.times.get(name, 0.0) + (now - self.last)
+        self.last = now
+
+    def summary(self) -> str:
+        return stage_summary(self.times)
+
+
+def stage_summary(times: dict[str, float]) -> str:
+    """把 stage_times 渲染成一行中文明细（日志与界面共用同一实现）。"""
+    return " · ".join(
+        f"{_STAGE_LABELS.get(k, k)} {v:.1f}s" for k, v in times.items()
+    )
+
+
 def _as_channels(samples: np.ndarray) -> list[np.ndarray]:
     """(frames, ch) 或 (frames,) → 单声道数组列表。"""
     if samples.ndim == 1:
@@ -277,7 +337,8 @@ def run(
         if log:
             log(msg)
 
-    t_start = time.perf_counter()
+    tm = _StageTimer()
+    t_start = tm.t0
 
     # --- 1. 探测与解码 -------------------------------------------------
     _tick(progress, 0.01, "探测媒体…")
@@ -299,6 +360,7 @@ def run(
 
     sr = decoded.sample_rate
     original = decoded.samples
+    tm.mark("decode")
 
     # --- 2. 静音裁剪与增益归一化 --------------------------------------
     trim_span: dsp.ActiveSpan | None = None
@@ -330,6 +392,7 @@ def run(
             note(f"另外发现 {len(gaps)} 段中间静音（合计 {total_gap:.1f}s）——默认保留，不改变时间轴。")
 
     source_stats = dsp.analyze(source, sr)
+    tm.mark("trim")
 
     # --- 3. 输出位置与复用判定 -----------------------------------------
     # 指纹只编码「输入 + 会影响结果的参数」，所以同参数第二次处理可以直接复用文件。
@@ -368,6 +431,7 @@ def run(
             # 降回 16 kHz —— 等于把带宽扩展白做，而且这个偏差会被记录下来一直复用下去。
             y = align_to(np.asarray(prev.samples, dtype=np.float32), source,
                          src_rate=sr, enh_rate=int(prev.sample_rate), note=note)
+            tm.mark("reuse")
             elapsed = time.perf_counter() - t_start
             _tick(progress, 1.0, "已复用已有结果")
             return PipelineResult(
@@ -392,11 +456,13 @@ def run(
                 variant_label=outputs.display_label(options),
                 reused=True,
                 stages=["reuse"],
+                stage_times=dict(tm.times),
             )
 
     gain_pre = 0.0
     working = source
     stages: list[str] = []
+    device_notes: list[str] = []
 
     # 去混响放在最前面：WPE 是线性前处理，让后面的降噪去收拾它留下的痕迹，
     # 顺序反过来会更难处理。实验性、默认关 —— 单通道 WPE 会连带把语音变薄。
@@ -432,6 +498,8 @@ def run(
             mode=options.normalize_mode,
         )
         stages.append("normalize-pre")
+
+    tm.mark("prep")
 
     # --- 4. 引擎降噪 ---------------------------------------------------
     _tick(progress, 0.12, "准备引擎…")
@@ -473,6 +541,11 @@ def run(
         note(f"[注意] 引擎上报输出率 {engine_out_rate} Hz，但按长度比实际是 "
              f"{cur_rate} Hz，已按实际值处理（sherpa 的 DPDFNet 会这样错报）。")
     stages.append("denoise")
+    tm.mark("denoise")
+    _dev = engine.provider_desc()
+    if _dev:
+        device_notes.append(f"降噪推理设备：{_dev}")
+        note(device_notes[-1])
 
     # --- 4b. 后处理：带宽扩展（修复类，会改写内容）--------------------
     if options.bwe_id:
@@ -533,6 +606,11 @@ def run(
             note(f"带宽扩展输出 {cur_rate} Hz；生成频段已压到通带之下 "
                  f"{options.bwe_hf_target_db:g} dB（修正引擎原始输出的电平失衡）。")
         stages.append(f"bwe:{options.bwe_id}")
+        tm.mark("bwe")
+        _bdev = bwe_eng.provider_desc()
+        if _bdev:
+            device_notes.append(f"带宽扩展推理设备：{_bdev}")
+            note(device_notes[-1])
         # 带宽扩展的输出采样率就是要交付的采样率。默认目标率是**源采样率**，
         # 若不在这里覆盖，刚补出来的高频会在下一步被重新采样掉，等于白做
         # —— 实测踩过这个坑（输出还是 16 kHz、8 kHz 以上依然为空）。
@@ -566,6 +644,8 @@ def run(
         if options.mud_cut_db:
             stages.append("mudcut")
 
+    tm.mark("eq")
+
     if options.compressor_enabled:
         _check(cancel)
         _tick(progress, 0.90, "温和压缩 / AGC…")
@@ -585,6 +665,8 @@ def run(
             )
         stages.append("compress")
 
+    tm.mark("compress")
+
     # --- 5. 采样率对齐与写出 -------------------------------------------
     _check(cancel)
     if cur_rate != target_rate:
@@ -592,10 +674,14 @@ def run(
         note(f"处理后为 {cur_rate} Hz，重采样回 {target_rate} Hz。")
         enhanced = media_io.resample(enhanced, cur_rate, target_rate)
 
+    tm.mark("resample")
+
     # 与原音对齐长度：引擎可能截掉末尾不足一帧的部分
     enhanced = align_to(enhanced, source, src_rate=sr, enh_rate=target_rate, note=note)
+    tm.mark("align")
 
     enhanced_stats = dsp.analyze(enhanced, target_rate)
+    tm.mark("stats")
 
     # 后置归一化：引擎会改变电平（降噪后 RMS 自然下降），所以「归一化」这个开关的契约
     # 必须是**输出**达到目标电平，而不是输入。这里再补一次以兑现该契约。
@@ -614,6 +700,8 @@ def run(
             f"（{options.normalize_mode} → {options.normalize_target_dbfs:.1f} dBFS）"
         )
 
+    tm.mark("normalize_out")
+
     # --- 混响指标 -------------------------------------------------------
     # 只在衰减段测量，因此不受语音内容干扰。注意它会被**稳态噪声底**拖慢，
     # 所以它说明的是"衰减有多慢"，不等于"一定是混响"——降噪前后的对比能区分二者。
@@ -628,6 +716,8 @@ def run(
             note(delta)
     except Exception as exc:                     # 指标失败不应影响主流程
         note(f"[注意] 混响指标计算失败（不影响结果）：{type(exc).__name__}: {exc}")
+
+    tm.mark("reverb")
 
     elapsed = time.perf_counter() - t_start
 
@@ -682,6 +772,11 @@ def run(
 
     _tick(progress, 1.0, f"完成（{elapsed:.1f}s）")
 
+    # 写出时间不计入 elapsed / rtf（沿用既有口径，便于与历史 RTF 比较），
+    # 但它单独出现在分阶段明细里，所以"总墙钟 = summary() 的合计"。
+    tm.mark("write")
+    note(f"分阶段耗时（合计 {time.perf_counter() - t_start:.1f}s）：{tm.summary()}")
+
     return PipelineResult(
         source_path=media_path,
         source=media_io.AudioData(samples=source, sample_rate=sr),
@@ -702,6 +797,8 @@ def run(
         fingerprint=fp,
         variant_label=outputs.display_label(options),
         stages=stages,
+        stage_times=dict(tm.times),
+        device_notes=device_notes,
         reverb_slope_db_s=reverb.get("slope_db_per_s"),
     )
 

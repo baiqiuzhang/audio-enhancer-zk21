@@ -44,6 +44,7 @@ from core.worker import AnalyzeWorker, BatchJob, BatchProcessor, DownloadWorker,
 from . import theme
 from .player import ENHANCED, SOURCE, ABPlayer
 from .waveform import WaveformView
+from .wheel_guard import install_wheel_guard
 
 READY_COLOR = QColor(theme.ACCENT)
 MISSING_COLOR = QColor(theme.WARN)
@@ -174,6 +175,11 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([420, 900])
         self.setCentralWidget(splitter)
+
+        # 滚轮护栏：左侧调参栏在滚动区里，而 Qt 默认"鼠标停在选择类控件上滚轮就改值"，
+        # 于是"滚页面"经常变成"误改参数"。装上之后：无焦点时滚轮交给滚动区，有焦点时
+        # 才允许微调。必须放在所有控件都建好之后。
+        install_wheel_guard(self)
 
         self.statusBar().showMessage("就绪")
 
@@ -494,6 +500,13 @@ class MainWindow(QMainWindow):
         self.spn_threads = QSpinBox()
         self.spn_threads.setRange(1, 16)
         self.spn_threads.setValue(2)
+        # 实测（2026-09-21，真实素材 120–180 s 片段，DPDFNet2 / GTCRN / DPDFNet8）：
+        # 1 与 2 线程等价（差别在噪声内），**4 线程起反而慢 7–29%**。
+        # 早先这里（以及 README）写着"收益在 2–4 附近见顶"——从未实测，且是错的。
+        self.spn_threads.setToolTip(
+            "传给引擎的内部线程数。实测：1 与 2 等价，**往上调只会更慢**"
+            "（4 线程相对默认 2 线程 +11%~25%，8 线程更多）。此参数不影响结果，只影响速度。"
+        )
         gp.addWidget(self.spn_threads, r, 1)
         r += 1
 
@@ -1536,6 +1549,10 @@ class MainWindow(QMainWindow):
         self._log(f"  处理后：{result.enhanced_stats.describe()}")
         if result.output_path and os.path.isfile(result.output_path):
             self._log(f"  已写出：{result.output_path}")
+        if result.stage_times:
+            self._log(f"  分阶段：{pipeline.stage_summary(result.stage_times)}")
+        for dev in result.device_notes:
+            self._log(f"  {dev}")
 
         self._apply_result_to_view(result)
         self._refresh_variants()      # 刚写出的结果应立刻出现在变体列表里
