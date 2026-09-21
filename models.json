@@ -1,0 +1,299 @@
+{
+  "schema": 1,
+  "_comment": [
+    "模型清单。每个文件按 sources 顺序尝试下载，镜像优先（github.com 在本机时为可达、时而被阻断）。",
+    "size/sha256 是**按源**记录的：同一模型在不同源的导出字节数可能不同（例如 Ceva-IP 的 ONNX 与 sherpa-onnx release 的 ONNX 是两次不同导出），",
+    "因此校验只能对照实际命中的那个源的元数据。sha256 为 null 表示尚未实测该源，下载后只校验 size。",
+    "本文件中所有非 null 的 size/sha256 均已在 2026-09-21 于本机实测（gtcrn_simple.onnx 还与官方 release checksum.txt 逐字节吻合）。"
+  ],
+  "engines": [
+    {
+      "id": "dsp_baseline",
+      "name": "DSP 基线（传统处理）",
+      "kind": "dsp",
+      "sample_rate": null,
+      "speed": "极快（毫秒级）",
+      "note": "非神经网络的传统处理，作为对照。不做任何「推断」，因此不会产生音乐噪声，但也去不掉非平稳噪声。",
+      "files": []
+    },
+    {
+      "id": "gtcrn",
+      "name": "GTCRN",
+      "kind": "sherpa",
+      "sherpa_type": "gtcrn",
+      "sample_rate": 16000,
+      "speed": "最快（RTF ≈ 0.04–0.07）",
+      "note": "535 KB，约 4.8 万参数。模型极小、速度最快，适合快速预览；强噪声下质量明显弱于 DPDFNet。",
+      "files": [
+        {
+          "path": "sherpa/gtcrn_simple.onnx",
+          "sources": [
+            {
+              "url": "https://hf-mirror.com/csukuangfj/speech-enhancement-models/resolve/main/gtcrn_simple.onnx",
+              "size": 535638,
+              "sha256": "e77603ac0c23dac3227dd2d7135b3a585cbee2679048aecfa886657d3ae1b534"
+            },
+            {
+              "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx",
+              "size": 535638,
+              "sha256": "e77603ac0c23dac3227dd2d7135b3a585cbee2679048aecfa886657d3ae1b534"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dpdfnet_baseline",
+      "name": "DPDFNet baseline",
+      "kind": "sherpa",
+      "sherpa_type": "dpdfnet",
+      "sample_rate": 16000,
+      "speed": "很快（RTF ≈ 0.06）",
+      "note": "DeepFilterNet2 基线。比 GTCRN 明显好，是「够用」的下限。",
+      "files": [
+        {
+          "path": "sherpa/baseline.onnx",
+          "sources": [
+            {
+              "url": "https://hf-mirror.com/Ceva-IP/DPDFNet/resolve/main/onnx/baseline.onnx?download=true",
+              "size": 8722707,
+              "sha256": "371d26182aff0e1e0d31354e24c81f79cd57458f5a7dd003fc10a7ebf64255e0"
+            },
+            {
+              "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/dpdfnet_baseline.onnx",
+              "size": 8791035,
+              "sha256": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dpdfnet2",
+      "name": "DPDFNet2（默认）",
+      "kind": "sherpa",
+      "sherpa_type": "dpdfnet",
+      "sample_rate": 16000,
+      "speed": "中（RTF ≈ 0.10–0.13）",
+      "note": "速度与质量平衡最好，日常首选。16 kHz 模型，输出 16 kHz。",
+      "default": true,
+      "files": [
+        {
+          "path": "sherpa/dpdfnet2.onnx",
+          "sources": [
+            {
+              "url": "https://hf-mirror.com/Ceva-IP/DPDFNet/resolve/main/onnx/dpdfnet2.onnx?download=true",
+              "size": 10178747,
+              "sha256": "4f0ee28935b4a32abecc717d745416976565834d839601acf43031094b4dc94c"
+            },
+            {
+              "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/dpdfnet2.onnx",
+              "size": 10249356,
+              "sha256": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dpdfnet4",
+      "name": "DPDFNet4",
+      "kind": "sherpa",
+      "sherpa_type": "dpdfnet",
+      "sample_rate": 16000,
+      "speed": "较慢（RTF ≈ 0.32）",
+      "note": "比 DPDFNet2 质量更高，约 3 倍耗时。",
+      "files": [
+        {
+          "path": "sherpa/dpdfnet4.onnx",
+          "sources": [
+            {
+              "url": "https://hf-mirror.com/Ceva-IP/DPDFNet/resolve/main/onnx/dpdfnet4.onnx?download=true",
+              "size": 11633337,
+              "sha256": "42a386d3601922f474c4309927e1f471cce422e9bd8e3fd3967bb943bac36c01"
+            },
+            {
+              "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/dpdfnet4.onnx",
+              "size": 11707436,
+              "sha256": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dpdfnet8",
+      "name": "DPDFNet8",
+      "kind": "sherpa",
+      "sherpa_type": "dpdfnet",
+      "sample_rate": 16000,
+      "speed": "最慢（RTF ≈ 0.56）",
+      "note": "质量最高，约 5 倍于 DPDFNet2 的耗时。长音频慎用。",
+      "files": [
+        {
+          "path": "sherpa/dpdfnet8.onnx",
+          "sources": [
+            {
+              "url": "https://hf-mirror.com/Ceva-IP/DPDFNet/resolve/main/onnx/dpdfnet8.onnx?download=true",
+              "size": 14542517,
+              "sha256": "899d4f23f3ff86edbffa8c537e4bcbdc49da1b4e84e0ef390611e0604a3b26cb"
+            },
+            {
+              "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/dpdfnet8.onnx",
+              "size": 14623619,
+              "sha256": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dpdfnet2_48khz_hr",
+      "name": "DPDFNet2 48kHz HR",
+      "kind": "sherpa",
+      "sherpa_type": "dpdfnet",
+      "sample_rate": 48000,
+      "speed": "中（RTF ≈ 0.20）",
+      "note": "48 kHz 原生模型，适合 48 kHz 素材（如未重采样的 WAV 导出）。注意：输入若为 16 kHz 会被升采样到 48 kHz 输出。",
+      "files": [
+        {
+          "path": "sherpa/dpdfnet2_48khz_hr.onnx",
+          "sources": [
+            {
+              "url": "https://hf-mirror.com/Ceva-IP/DPDFNet/resolve/main/onnx/dpdfnet2_48khz_hr.onnx?download=true",
+              "size": 10493337,
+              "sha256": "7f0575a5cec0ba4ffd8f8bd657e06d007e4ccdd955d76faab922b9d3291dc14b"
+            },
+            {
+              "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/dpdfnet2_48khz_hr.onnx",
+              "size": 10596848,
+              "sha256": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "deepfilternet3",
+      "name": "DeepFilterNet3",
+      "kind": "dfn_exe",
+      "sample_rate": null,
+      "speed": "中（RTF ≈ 0.19）",
+      "note": "经典 DeepFilterNet3，官方 Rust 可执行文件，内嵌 DFN3 权重。接受 16k/44.1k/48k 并保持输入采样率（已实测）。会把整个文件读入内存，长音频占用较高；末尾不足一帧的部分会被丢弃（已用源信号尾部补偿）。注意：该工具内部只支持到 16-bit，输出精度上限为 PCM_16。",
+      "files": [
+        {
+          "path": "dfn/deep-filter.exe",
+          "sources": [
+            {
+              "url": "https://github.com/Rikorose/DeepFilterNet/releases/download/v0.5.6/deep-filter-0.5.6-x86_64-pc-windows-msvc.exe",
+              "size": 26912256,
+              "sha256": "75e11fa16445f560cb6b021521ddb89e89270d13b83089705d98776f58fd7915"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "novasr",
+      "name": "NovaSR（16k→48k，极快）",
+      "kind": "bwe",
+      "sample_rate": 16000,
+      "speed": "带宽扩展",
+      "note": "约 52K 参数的时域卷积生成器，16 kHz → 48 kHz，CPU ~7× 实时（实测 RTF 0.146）。\n实测其 8 kHz 以上相对通带仅 +1.5 dB（lavasr 是 +19.4 dB），听感最不刺耳，故作为带宽扩展的默认档。\n⚠️ 会编造高频内容（生成式），仅用于试听，不要用于识别。",
+      "files": [
+        {
+          "path": "bwe/novasr/novasr.onnx",
+          "sources": [
+            {
+              "url": "https://hf-mirror.com/TigreGotico/audiosronnx-novasr/resolve/main/novasr.onnx",
+              "size": 228736,
+              "sha256": "0ece352753caec56d1815fb2410c6a4bd90e06119b2de85f921c20bfa6fc0274"
+            }
+          ]
+        }
+      ],
+      "bwe_default": true
+    },
+    {
+      "id": "lavasr",
+      "name": "LavaSR（8–48k→48k，保留低频）",
+      "kind": "bwe",
+      "sample_rate": 48000,
+      "speed": "带宽扩展",
+      "note": "Vocos 带宽扩展 + Linkwitz–Riley 频谱合并。它声明「保留低频只换高频」，但实测三个带宽扩展引擎都会保留低频（5 kHz 以下与「仅降噪」的相关性 0.999–1.000），所以这一点并非它独有。\n而它的高频明显更响：8 kHz 以上相对通带 +19.4 dB（novasr +1.5 / hifiganbwe +6.4），且 CPU 比实时还慢（实测 RTF 1.94；官方宣传的 ~50× 实时未能在本机复现）。\n⚠️ 生成式，会编造高频内容，仅用于试听，不要用于识别。",
+      "files": [
+        {
+          "path": "bwe/lavasr/backbone.onnx",
+          "sources": [
+            {
+              "url": "https://hf-mirror.com/TigreGotico/audiosronnx-lavasr/resolve/main/backbone.onnx",
+              "size": 51761958,
+              "sha256": "959f7879f58a80ce8e76156e3ee4dd3d56b6a5d62713272806f2c2f2860f56c0"
+            }
+          ]
+        },
+        {
+          "path": "bwe/lavasr/spec_head.onnx",
+          "sources": [
+            {
+              "url": "https://hf-mirror.com/TigreGotico/audiosronnx-lavasr/resolve/main/spec_head.onnx",
+              "size": 4208522,
+              "sha256": "abd7961809fde26b38f3e7499d1d1240a222deee64cf472b9f6d9827d27a4e8a"
+            }
+          ]
+        },
+        {
+          "path": "bwe/lavasr/denoiser_core.onnx",
+          "sources": [
+            {
+              "url": "https://hf-mirror.com/TigreGotico/audiosronnx-lavasr/resolve/main/denoiser_core.onnx",
+              "size": 1173265,
+              "sha256": "2cd7038ca01cd67ee939e824c975fedc12edcd8ca96a4ace6b7206b12da41922"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hifiganbwe",
+      "name": "HiFi-GAN BWE（任意→48k，MIT）",
+      "kind": "bwe",
+      "sample_rate": 48000,
+      "speed": "带宽扩展",
+      "note": "HiFi-GAN 波网带宽扩展，权重仅 4.2 MB、MIT 许可，是最轻的高频补回档。\n⚠️ 会编造高频内容，仅用于试听，不要用于识别。",
+      "files": [
+        {
+          "path": "bwe/hifiganbwe/hifiganbwe_wavenet.onnx",
+          "sources": [
+            {
+              "url": "https://hf-mirror.com/TigreGotico/audiosronnx-hifiganbwe/resolve/main/hifiganbwe_wavenet.onnx",
+              "size": 4217287,
+              "sha256": "a0baaa2327813ca179b284a02000b0ebe296fd274794d87021b433de2045fe7d"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "extras": [
+    {
+      "id": "samples",
+      "name": "官方测试音频（供「载入示例」按钮使用）",
+      "required_by": "载入示例",
+      "size_hint": "约 380 KB",
+      "files": [
+        {
+          "path": "../samples/speech_with_noise.wav",
+          "_note": "示例音频随项目一同分发（samples/ 目录），此处仅作为缺失时的补取路径。无 hf-mirror 源：该仓库不含 wav。",
+          "sources": [
+            {
+              "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/speech_with_noise.wav",
+              "size": 76770,
+              "sha256": "9354345a6297f4522e690d337546aa9a686a7e61eefcd935478a2141b924db8f"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

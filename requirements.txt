@@ -1,0 +1,25 @@
+# AudioEnhancer_zk21 — 固定版本依赖
+#
+# 安装到项目内独立 venv，不触碰 Anaconda base：
+#   C:\Users\10424\Anaconda3\python.exe -m venv .venv
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt
+#
+# 版本均已确认存在 cp312 / win_amd64 wheel。
+# 刻意不装 librosa / numba / onnxruntime / torch：
+#   - librosa 1.0.0 要求 numpy>=2.1，与 numba 0.59.1(要求 numpy<1.27) 互斥；
+#   - sherpa-onnx 捆绑自己的 onnxruntime DLL，无需 pip onnxruntime；
+#   - 降噪走 ONNX，全程不需要 torch。
+
+sherpa-onnx==1.13.8          # 核心引擎：降噪 + VAD，自带 ORT DLL
+soundfile==0.14.0            # wav/flac/ogg/opus/mp3 读写（自带 libsndfile）
+av==18.1.0                   # 视频容器 + m4a/aac/wma 解码（自带 FFmpeg）
+soxr==1.1.0                  # 重采样
+sounddevice==0.5.6           # 播放（自带 PortAudio）
+PyQt5==5.15.10               # 界面。用 Qt5 而非 PySide6/Qt6，原因见 README「已知限制」
+numpy>=1.26,<3
+
+# 带宽扩展 / 修复类（生成式，会编造高频；默认关闭，只在「试听用」预设里开启）
+# 用 --pre 安装：稳定版 0.0.1 只含 lavasr+novasr，novasr 之外的引擎在预发布版里。
+#   .venv\Scripts\python.exe -m pip install --pre audiosronnx
+# 它会带入 onnxruntime 与 scipy（实测 numpy 2.5.3 / soundfile 0.14.0 不受影响）。
+audiosronnx>=0.9.0a2

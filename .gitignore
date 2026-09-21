@@ -1,0 +1,15 @@
+# 独立环境（与 Anaconda base 完全隔离，可由 setup_env.ps1 重建）
+.venv/
+
+# 模型权重（可由界面或 tests/download_models.py 重建；含 138 MB 权重）
+models/
+
+# 项目级输出与测试产物
+out/
+samples/AudioEnhancer_zk21/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
