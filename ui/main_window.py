@@ -60,6 +60,13 @@ FILE_FILTER = (
 SHELF_DB = 3.0
 HIGH_PASS_HZ = 80
 
+# 「去闷（保真档）」的实测标定值。依据：真实素材（18 分钟 mp4，300s 起 90s 片段）
+# 上 200–500 Hz 比中频高 +2.8~+4.0 dB、2–5 kHz 比中频低 −11~−12 dB。
+# 该组合实测把发闷指数从 +16.4 降到 +9.2 dB（改善 7.2 dB），且峰值未削顶。
+# 搁架中心 3000 Hz 优于 4000 Hz（改善 +7.21 vs +5.54 dB）——亏空在 2–5 kHz。
+MUD_CUT_DB_PRESET = -5.0
+SHELF_DB_PRESET = 6.0
+
 
 def _fmt_time(seconds: float) -> str:
     seconds = max(0.0, float(seconds))
@@ -517,9 +524,33 @@ class MainWindow(QMainWindow):
 
         # 听感增强是「修饰」（只改频响与动态，不编造内容）。带宽扩展是「生成」，
         # 性质不同，所以它放在预设区、并且默认关闭。
-        self.chk_shelf = QCheckBox(f"听感增强：高频搁架 +{SHELF_DB:g} dB")
-        self.chk_shelf.setToolTip("4 kHz 以上的搁架提升，让语音更清晰。只改频响，不造内容。")
-        gp.addWidget(self.chk_shelf, r, 0, 1, 2)
+        self.chk_shelf = QCheckBox("听感增强：高频搁架")
+        self.chk_shelf.setToolTip(
+            "搁架提升把 2–5 kHz 的「清晰度」区抬起来。只改频响，不造内容。\n"
+            "中心频率固定 3000 Hz（实测比 4000 Hz 更能补到 2–3 kHz）。"
+        )
+        gp.addWidget(self.chk_shelf, r, 0)
+        self.spn_shelf_db = QDoubleSpinBox()
+        self.spn_shelf_db.setRange(0.0, 12.0)
+        self.spn_shelf_db.setValue(SHELF_DB)
+        self.spn_shelf_db.setSingleStep(1.0)
+        self.spn_shelf_db.setSuffix(" dB")
+        gp.addWidget(self.spn_shelf_db, r, 1)
+        r += 1
+
+        # 去闷：压掉 200–500 Hz 的「发闷」堆积。实测这是「浑浊」的主因。
+        gp.addWidget(QLabel("去闷（200–500 Hz）"), r, 0)
+        self.spn_mudcut = QDoubleSpinBox()
+        self.spn_mudcut.setRange(-12.0, 0.0)
+        self.spn_mudcut.setValue(0.0)
+        self.spn_mudcut.setSingleStep(1.0)
+        self.spn_mudcut.setSuffix(" dB")
+        self.spn_mudcut.setToolTip(
+            "在 350 Hz 附近做**钟形**衰减，压掉「发闷」的堆积（0 = 关闭）。\n"
+            "用钟形而不是搁架，是为了不动 100 Hz 以下的基频——"
+            "否则声音会变薄。实测素材该区比中频高 +2.8~+4.0 dB。"
+        )
+        gp.addWidget(self.spn_mudcut, r, 1)
         r += 1
 
         self.chk_comp = QCheckBox("听感增强：温和压缩（AGC）")
@@ -538,10 +569,12 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         row.setSpacing(8)
         self.btn_preset_faithful = QPushButton("识别用（保真）")
+        self.btn_preset_demud = QPushButton("去闷（保真档）")
         self.btn_preset_listen = QPushButton("试听用（增强）")
         grp = QButtonGroup(self)
         grp.setExclusive(True)
-        for btn in (self.btn_preset_faithful, self.btn_preset_listen):
+        for btn in (self.btn_preset_faithful, self.btn_preset_demud,
+                    self.btn_preset_listen):
             btn.setCheckable(True)
             btn.setMinimumHeight(30)
             grp.addButton(btn)
@@ -551,11 +584,19 @@ class MainWindow(QMainWindow):
             "只做降噪 + 高通 + 裁剪 + 归一化，不做带宽扩展、不做听感增强。\n"
             "识别 / 取证用这一档：带宽扩展是生成式的，会编造高频内容。"
         )
+        self.btn_preset_demud.setToolTip(
+            f"按实测标定压掉「发闷」：去闷 {MUD_CUT_DB_PRESET:+g} dB @ 350 Hz（钟形）"
+            f" + 搁架 {SHELF_DB_PRESET:+g} dB @ 3000 Hz。\n"
+            "只改频响、不重合成、不编造内容，所以仍然可以用于识别——"
+            "但它会改变音色（低频变少、高频变多）。\n"
+            "实测把发闷指数从 +16.4 降到 +9.2 dB。不开压缩：压缩改动态，与保真目标冲突。"
+        )
         self.btn_preset_listen.setToolTip(
             "在识别用的基础上加搁架 EQ 与温和压缩，并可按需开启带宽扩展。\n"
             "只用于试听。"
         )
         self.btn_preset_faithful.clicked.connect(lambda: self._apply_preset("faithful"))
+        self.btn_preset_demud.clicked.connect(lambda: self._apply_preset("demud"))
         self.btn_preset_listen.clicked.connect(lambda: self._apply_preset("listen"))
         g.addLayout(row)
 
@@ -811,11 +852,26 @@ class MainWindow(QMainWindow):
         self.spn_highpass.setValue(HIGH_PASS_HZ)
         if name == "faithful":
             self.chk_shelf.setChecked(False)
+            self.spn_shelf_db.setValue(SHELF_DB)
+            self.spn_mudcut.setValue(0.0)
             self.chk_comp.setChecked(False)
             self.cmb_bwe.setCurrentIndex(0)          # 关闭带宽扩展
             self._log("已套用预设：识别用（保真）—— 不编造高频内容")
+        elif name == "demud":
+            self.chk_shelf.setChecked(True)
+            self.spn_shelf_db.setValue(SHELF_DB_PRESET)
+            self.spn_mudcut.setValue(MUD_CUT_DB_PRESET)
+            # 刻意不开压缩：压缩改动态，与"保真"目标冲突
+            self.chk_comp.setChecked(False)
+            self.cmb_bwe.setCurrentIndex(0)
+            self._log(
+                f"已套用预设：去闷（保真档）—— {MUD_CUT_DB_PRESET:+g} dB @ 350 Hz（钟形）"
+                f" + 搁架 {SHELF_DB_PRESET:+g} dB @ 3000 Hz；只改频响，不造内容"
+            )
         else:
             self.chk_shelf.setChecked(True)
+            self.spn_shelf_db.setValue(SHELF_DB)
+            self.spn_mudcut.setValue(0.0)
             self.chk_comp.setChecked(True)
             self.cmb_bwe.setCurrentIndex(self._bwe_default_index)
             self._log(
@@ -1262,7 +1318,8 @@ class MainWindow(QMainWindow):
             highpass_hz=float(self.spn_highpass.value()),
             bwe_id=self.cmb_bwe.currentData(),
             shelf_enabled=self.chk_shelf.isChecked(),
-            shelf_db=SHELF_DB,
+            shelf_db=float(self.spn_shelf_db.value()),
+            mud_cut_db=float(self.spn_mudcut.value()),
             compressor_enabled=self.chk_comp.isChecked(),
         )
 

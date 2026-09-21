@@ -198,6 +198,9 @@ def spec_dict(input_path: str, options, stream_index: int | None = None,
                 "shelf_enabled": bool(options.shelf_enabled),
                 "shelf_hz": float(options.shelf_hz),
                 "shelf_db": float(options.shelf_db),
+                "mud_cut_hz": float(options.mud_cut_hz),
+                "mud_cut_db": float(options.mud_cut_db),
+                "mud_cut_width_oct": float(options.mud_cut_width_oct),
                 "compressor_enabled": bool(options.compressor_enabled),
                 "comp_threshold_dbfs": float(options.comp_threshold_dbfs),
                 "comp_ratio": float(options.comp_ratio),
@@ -253,6 +256,8 @@ def filename_chain(options, engine_kind: str | None = None) -> str:
         parts.append(f"bwe-{options.bwe_id}")
     if options.shelf_enabled:
         parts.append(f"eq{options.shelf_db:+g}")
+    if options.mud_cut_db:
+        parts.append(f"demud{options.mud_cut_db:+g}")
     if options.compressor_enabled:
         parts.append("cmp")
     if options.dereverb_enabled:
@@ -269,9 +274,11 @@ def display_label(options) -> str:
     if options.bwe_id:
         label_parts.append(f"+{options.bwe_id}")
     tail: list[str] = []
+    if options.mud_cut_db:
+        tail.append(f"去闷{options.mud_cut_db:+g}dB")
     if options.shelf_enabled or options.compressor_enabled:
         tail.append("听感增强")
-    else:
+    if not tail:
         tail.append("纯降噪")
     if options.dereverb_enabled:
         tail.append("去混响")

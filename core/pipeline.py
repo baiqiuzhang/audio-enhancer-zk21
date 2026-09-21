@@ -56,8 +56,18 @@ class PipelineOptions:
 
     # --- 后处理：听感增强（修饰，不改写内容）-------------------------
     shelf_enabled: bool = False
-    shelf_hz: float = 4000.0
+    # 搁架中心默认 3000 Hz 而不是 4000：实测（真实素材，18 分钟 mp4，
+    # 300s 起 90s 片段）中心 3000 Hz 时发闷指数改善 +7.21 dB、presence 提升
+    # +5.60 dB；中心 4000 Hz 只有 +5.54 / +3.97 dB——因为亏空在 2–5 kHz，
+    # 4 kHz 的搁架把 2–3 kHz 放过了。见 .zcode/diagnosis/。
+    shelf_hz: float = 3000.0
     shelf_db: float = 3.0
+    # 去闷：中低频**钟形**衰减（200–500 Hz 是实测的"发闷"堆积区；0 dB = 关闭）。
+    # 不用搁架是因为发闷是一段带宽而不是"某个频率以上"——搁架会把 100 Hz 以下的
+    # 基频也一起砍掉，声音会变薄。实测标定见 .zcode/diagnosis/。
+    mud_cut_hz: float = 350.0
+    mud_cut_db: float = 0.0
+    mud_cut_width_oct: float = 0.9
     compressor_enabled: bool = False
     comp_threshold_dbfs: float = -18.0
     comp_ratio: float = 2.0
@@ -412,15 +422,30 @@ def run(
             note(f"输出采样率取带宽扩展的原生率：{target_rate} Hz")
 
     # --- 4c. 后处理：听感增强（修饰，不改写内容）----------------------
-    if options.shelf_enabled and options.shelf_db:
+    # 搁架提升与去闷合成**同一条**增益曲线，一次 STFT/ISTFT 就同时做完，
+    # 所以任一项非零就跑。shelf_enabled 只管搁架；去闷用「0 dB = 关闭」表示。
+    eq_shelf = bool(options.shelf_enabled and options.shelf_db)
+    if eq_shelf or options.mud_cut_db:
         _check(cancel)
-        _tick(progress, 0.89, f"高频搁架 +{options.shelf_db:g} dB @ {options.shelf_hz:g} Hz…")
+        bits = []
+        if eq_shelf:
+            bits.append(f"搁架 {options.shelf_db:+g} dB @ {options.shelf_hz:g} Hz")
+        if options.mud_cut_db:
+            bits.append(f"去闷 {options.mud_cut_db:+g} dB @ {options.mud_cut_hz:g} Hz")
+        _tick(progress, 0.89, "听感 EQ：" + " + ".join(bits) + "…")
         enhanced = enhance.spectral_shape(
             enhanced, cur_rate,
-            shelf_hz=options.shelf_hz, shelf_db=options.shelf_db,
+            shelf_hz=options.shelf_hz,
+            shelf_db=options.shelf_db if eq_shelf else 0.0,
+            mud_cut_hz=options.mud_cut_hz,
+            mud_cut_db=options.mud_cut_db,
+            mud_cut_width_oct=options.mud_cut_width_oct,
             progress=progress, cancel=cancel,
         )
-        stages.append("shelf")
+        if eq_shelf:
+            stages.append("shelf")
+        if options.mud_cut_db:
+            stages.append("mudcut")
 
     if options.compressor_enabled:
         _check(cancel)

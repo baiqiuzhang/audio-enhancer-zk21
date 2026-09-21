@@ -27,13 +27,36 @@ SLOPE_NOTICEABLE = 35.0
 # 高通 + 高频搁架 EQ
 # ---------------------------------------------------------------------------
 
-def shelf_gain_curve(freqs: np.ndarray, *, hp_cutoff_hz: float = 0.0,
-                     shelf_hz: float = 4000.0, shelf_db: float = 0.0) -> np.ndarray:
-    """合成一条频点增益曲线：低频滚降 + 高频搁架提升。
+def _bell_gain(freqs: np.ndarray, center_hz: float, db: float,
+               width_oct: float) -> np.ndarray:
+    """对数频率上的钟形增益，用于中低频「去闷」衰减。
 
-    两个滤波器合成一条曲线，所以只需要一次 STFT/ISTFT：
+    用高斯钟形而不是搁架：发闷是**一段带宽**（实测 200–500 Hz）而不是"某个频率以上"，
+    用搁架会把 100 Hz 以下的基频也一起砍掉，声音会变薄。
+    `width_oct` 以倍频程为单位；0 dB 时返回全 1，不做任何事。
+    """
+    if not db or center_hz <= 0:
+        return np.ones_like(freqs, dtype=np.float64)
+    f = np.maximum(np.asarray(freqs, dtype=np.float64), 1e-6)
+    d = np.log2(f / float(center_hz))
+    w = max(float(width_oct), 0.05)
+    shape = np.exp(-0.5 * (d / w) ** 2)
+    target = float(10.0 ** (db / 20.0))
+    return (1.0 - shape) + shape * target
+
+
+def shelf_gain_curve(freqs: np.ndarray, *, hp_cutoff_hz: float = 0.0,
+                     shelf_hz: float = 3000.0, shelf_db: float = 0.0,
+                     mud_cut_hz: float = 350.0, mud_cut_db: float = 0.0,
+                     mud_cut_width_oct: float = 0.9) -> np.ndarray:
+    """合成一条频点增益曲线：低频滚降 + 高频搁架提升 + 中低频钟形衰减。
+
+    三项合成一条曲线，所以只需要一次 STFT/ISTFT：
     - 高通用 `(f/fc)^2` 平滑滚降，不用硬切（硬切会在截止点产生振铃）
     - 搁架用 tanh 过渡，避免拐点突兀、听起来"有台阶"
+    - 去闷用对数频率上的高斯钟形（见 _bell_gain），只压"发闷"那一段带宽
+
+    默认 `mud_cut_db=0` 即不做去闷，所以不传该参数时行为与加它之前完全一致。
     """
     g = np.ones_like(freqs, dtype=np.float64)
     if hp_cutoff_hz and hp_cutoff_hz > 0:
@@ -41,9 +64,14 @@ def shelf_gain_curve(freqs: np.ndarray, *, hp_cutoff_hz: float = 0.0,
     if shelf_db:
         target = float(10.0 ** (shelf_db / 20.0))
         width = max(float(shelf_hz) * 0.5, 1.0)
-        t = np.clip((freqs - float(shelf_hz)) / width, -1.0, 1.0)
+        # 刻意**不**对 t 做 np.clip：截断会让 tanh(1.5)≈0.905 永远到不了 1，
+        # 于是 w 的残余值给整个低频端留下约 +0.4 dB 的虚假提升（+6 dB 搁架时），
+        # 这个"高频搁架"就不再是纯搁架了。不截断时 tanh 会自己饱和到 ±1。
+        t = (freqs - float(shelf_hz)) / width
         w = 0.5 * (np.tanh(t * 1.5) + 1.0)
         g *= (1.0 - w) + w * target
+    if mud_cut_db:
+        g *= _bell_gain(freqs, mud_cut_hz, mud_cut_db, mud_cut_width_oct)
     return g.astype(np.float32)
 
 
@@ -52,16 +80,19 @@ def spectral_shape(
     sample_rate: int,
     *,
     hp_cutoff_hz: float = 0.0,
-    shelf_hz: float = 4000.0,
+    shelf_hz: float = 3000.0,
     shelf_db: float = 0.0,
+    mud_cut_hz: float = 350.0,
+    mud_cut_db: float = 0.0,
+    mud_cut_width_oct: float = 0.9,
     n_fft: int = 1024,
     block_s: float = 30.0,
     progress: ProgressCb | None = None,
     cancel: CancelCb | None = None,
 ) -> np.ndarray:
-    """高通 + 高频搁架 EQ。分块处理，长文件内存受控。"""
+    """高通 + 高频搁架 EQ + 中低频去闷。分块处理，长文件内存受控。"""
     x = np.asarray(samples, dtype=np.float32)
-    if hp_cutoff_hz <= 0 and not shelf_db:
+    if hp_cutoff_hz <= 0 and not shelf_db and not mud_cut_db:
         return x.copy()
 
     multi = x.ndim == 2
@@ -71,7 +102,9 @@ def spectral_shape(
     hop = n_fft // 4
     freqs = np.fft.rfftfreq(n_fft, d=1.0 / sample_rate)
     curve = shelf_gain_curve(freqs, hp_cutoff_hz=hp_cutoff_hz,
-                             shelf_hz=shelf_hz, shelf_db=shelf_db)
+                             shelf_hz=shelf_hz, shelf_db=shelf_db,
+                             mud_cut_hz=mud_cut_hz, mud_cut_db=mud_cut_db,
+                             mud_cut_width_oct=mud_cut_width_oct)
 
     out: list[np.ndarray] = []
     total = len(channels)
