@@ -314,11 +314,54 @@ def check_pipeline_stages(cat, skip_bwe: bool) -> None:
             check(f"{bwe_id}：低频被保留（<5 kHz 与「仅降噪」高度一致）", corr >= 0.95,
                   f"相关性 {corr:.4f}（时延 {lag} 帧）")
 
-            # 顺带记录高频相对通带的电平——过亮是这类模型的典型副作用
+            # 顺带记录高频相对通带的电平。注意：**修复前**三个引擎的生成频段都
+            # 远高于通带（lavasr 在 12–20 kHz 甚至高 +89 dB 且自身已削顶），
+            # 听感就是"只剩高频"；现在 core/bwe.py 会把它压到通带之下
+            # （HF_TARGET_DB，默认 −12 dB），所以这里的期望值已经反过来。
             f_hi, P_hi = psd(y_b, rate)
             hi = band_db(f_hi, P_hi, 8000, 16000) - band_db(f_hi, P_hi, 500, 2000)
             print(f"    （参考）8 kHz 以上相对通带 {hi:+.1f} dB，"
                   f"谱质心 {centroid(y_b, rate):.0f} Hz")
+
+        # (d) 立体声 + 带宽扩展：这条组合**曾经一个套件都没覆盖**，结果上线了
+        #     「听感只剩高频、而且有一个声道是坏的」的缺陷。这里用不变式守住：
+        #     ① 同内容的双声道输入 → 输出两声道必须**逐样本一致**（任何"一路坏"
+        #        都会立刻违反它）；② 时长必须不变（这条抓的是 align_to 曾按样本数
+        #        比较、把 48 kHz 的扩展输出截成 1/3 时长那个静默数据丢失）；
+        #     ③ 生成频段必须被压到通带之下（直接对应"只剩高频"这个症状）。
+        section("4b. 立体声 + 带宽扩展（曾经的覆盖盲区）")
+        src_audio = media_io.decode(inp)
+        dual = np.stack([media_io.to_mono(src_audio.samples)] * 2, axis=1)
+        dual_path = os.path.join(tmp, "dual_mono.wav")
+        media_io.write_audio(dual_path, dual, src_audio.sample_rate)
+        dur_in = len(dual) / float(src_audio.sample_rate)
+
+        for bwe_id in ("novasr", "lavasr"):
+            spec = cat.engine(bwe_id)
+            if spec is None or not all(
+                os.path.isfile(cat.resolve(f.path)) for f in spec.files
+            ):
+                print(f"  [跳过] {bwe_id}：权重未就绪")
+                continue
+            r_st = pipeline.run(dual_path, cat, make_opts(
+                trim_silence=False, highpass_hz=80, normalize=False, bwe_id=bwe_id,
+                keep_channels=True, output_dir=os.path.join(tmp, f"st_{bwe_id}")))
+            y_st = np.asarray(r_st.enhanced.samples)
+            rate_st = r_st.enhanced.sample_rate
+            check(f"[立体声] {bwe_id}：输出保持双声道",
+                  y_st.ndim == 2 and y_st.shape[1] == 2, str(y_st.shape))
+            if y_st.ndim == 2 and y_st.shape[1] == 2:
+                dmax = float(np.max(np.abs(y_st[:, 0] - y_st[:, 1])))
+                check(f"[立体声] {bwe_id}：同内容双声道 → 输出两声道逐样本一致",
+                      dmax < 1e-6, f"最大逐样本差 {dmax:.3e}")
+            dur_out = len(y_st) / float(rate_st)
+            check(f"[立体声] {bwe_id}：时长不变（带宽扩展只改采样率、不改时长）",
+                  abs(dur_out - dur_in) < 0.05,
+                  f"{dur_in:.3f}s@{src_audio.sample_rate} → {dur_out:.3f}s@{rate_st}")
+            f_s, P_s = psd(np.asarray(y_st[:, 0], dtype=np.float32), rate_st)
+            hi_st = band_db(f_s, P_s, 8000, 16000) - band_db(f_s, P_s, 500, 2000)
+            check(f"[立体声] {bwe_id}：生成频段被压到通带之下（不再「只剩高频」）",
+                  hi_st < 0.0, f"8k+ 相对通带 {hi_st:+.1f} dB（目标 ≈ −12）")
 
 
 def main() -> int:

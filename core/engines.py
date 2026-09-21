@@ -373,12 +373,18 @@ class BweEngine(BaseEngine):
 
     kind = "bwe"
 
-    def process(self, mono, sample_rate, params, *, progress=None, cancel=None):
+    def process(self, mono, sample_rate, params, *, cutoff_hz=None, hf_target_db=None,
+                progress=None, cancel=None):
         from . import bwe  # 局部导入：audiosronnx 未安装时其余功能仍可用
 
+        kw = {}
+        if cutoff_hz:
+            kw["cutoff_hz"] = float(cutoff_hz)
+        if hf_target_db is not None:
+            kw["hf_target_db"] = float(hf_target_db)
         y, rate = bwe.upscale(
             self.spec.id, self.catalog, mono, sample_rate,
-            progress=progress, cancel=cancel,
+            progress=progress, cancel=cancel, **kw,
         )
         return np.asarray(y, dtype=np.float32), int(rate)
 

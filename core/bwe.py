@@ -40,9 +40,95 @@ ENGINE_MODULES = {
 CHUNK_S = 20.0
 OVERLAP_S = 0.5
 
+# ---------------------------------------------------------------------------
+# 生成频段的电平平衡
+# ---------------------------------------------------------------------------
+# 三个 BWE 引擎的**原始输出都把生成频段抬得远高于通带**。实测（2026-09-21，真实素材
+# 60 秒片段，绝对频段对比：输出各频段功率 ÷ 输入同频段功率）：
+#     novasr      5k–8k −2.7 dB / 8k–12k +13.7 / 12k–20k +24.2
+#     hifiganbwe  5k–8k +1.6 dB / 8k–12k +26.2 / 12k–20k +29.4
+#     lavasr      5k–8k +14.0 dB / 8k–12k +71.1 / 12k–20k +89.1（它自己还 np.clip 到 ±1，已削顶）
+# 低频其实**保住了**（0–5 kHz 三个引擎都是 ≈0 dB），所以"听上去只剩高频"是
+# **混音增益失衡**，不是丢低频——这一点很容易用"频段占比"读反（相对占比会被
+# 高得离谱的生成频段压到 1%），必须用绝对值判断。
+#
+# 语音的自然频谱在 500 Hz 以上约每倍频程 −6 dB，所以生成频段本就该明显低于通带。
+# 这里把它压到通带之下 HF_TARGET_DB，同时把通带响度对齐回输入——一条规则适用于
+# 所有引擎，并且可以用同一套频段指标验证。
+HF_TARGET_DB = -12.0
+BALANCE_CUTOFF_HZ = 8000.0        # 与 audiosronnx 各引擎的默认合并截止一致
+_PRIMARY_BANDS = (20.0, BALANCE_CUTOFF_HZ)
+
 
 class BweUnavailable(RuntimeError):
     """audiosronnx 不可用，或权重尚未下载。"""
+
+
+def _band_power(x: np.ndarray, sr: int, lo: float, hi: float,
+                n_fft: int = 4096) -> float:
+    """[lo, hi) 频段的功率。只用于算增益（输入是片段，不是整段），内存可控。"""
+    from .dsp import _hann  # noqa: PLC0415 — 复用已有窗口实现
+
+    sig = np.asarray(x, dtype=np.float64).reshape(-1)
+    if len(sig) < n_fft * 2:
+        sig = np.pad(sig, (0, n_fft * 2 - len(sig)))
+    hop = n_fft // 2
+    n_fr = 1 + (len(sig) - n_fft) // hop
+    idx = np.arange(n_fft)[None, :] + hop * np.arange(n_fr)[:, None]
+    frames = sig[idx] * _hann(n_fft)
+    psd = (np.abs(np.fft.rfft(frames, axis=1)) ** 2).mean(axis=0)
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / sr)
+    df = freqs[1] - freqs[0] if len(freqs) > 1 else 1.0
+    sel = (freqs >= lo) & (freqs < min(hi, sr / 2.0))
+    return float(psd[sel].sum() * df)
+
+
+def balance_gains(y: np.ndarray, out_rate: int, x_ref: np.ndarray, ref_rate: int,
+                  *, cutoff_hz: float = BALANCE_CUTOFF_HZ,
+                  hf_target_db: float = HF_TARGET_DB) -> tuple[float, float]:
+    """算出 (通带增益, 生成频段增益)，让输出响度对齐输入、且高频落在通带之下。
+
+    返回 (1.0, 1.0) 表示不做任何改动（测不出有效功率时保守地不动）。
+    """
+    lo, hi = _PRIMARY_BANDS
+    p_in = _band_power(x_ref, ref_rate, lo, min(hi, cutoff_hz))
+    p_low = _band_power(y, out_rate, lo, min(hi, cutoff_hz))
+    p_hf = _band_power(y, out_rate, cutoff_hz, out_rate / 2.0)
+    if p_in <= 0 or p_low <= 0 or p_hf <= 0:
+        return 1.0, 1.0
+    g_low = float(np.sqrt(p_in / p_low))
+    # 目标是「生成频段 = 通带 × 10^(hf_target_db/10)」
+    target_hf = p_in * (10.0 ** (hf_target_db / 10.0))
+    g_hf = float(np.sqrt(target_hf / p_hf))
+    return g_low, g_hf
+
+
+def apply_balance(x: np.ndarray, sr: int, g_low: float, g_hf: float, *,
+                  cutoff_hz: float = BALANCE_CUTOFF_HZ, n_fft: int = 1024,
+                  block_s: float = 30.0) -> np.ndarray:
+    """按两条增益把通带与生成频段分别缩放，过渡区用 tanh 平滑（避免台阶感）。"""
+    if abs(g_low - 1.0) < 1e-6 and abs(g_hf - 1.0) < 1e-6:
+        return np.asarray(x, dtype=np.float32)
+    from .dsp import _hann, _istft_block, _stft_block  # noqa: PLC0415
+
+    win = _hann(n_fft)
+    hop = n_fft // 4
+    freqs = np.fft.rfftfreq(n_fft, d=1.0 / sr)
+    width = max(cutoff_hz * 0.15, 1.0)
+    w = 0.5 * (np.tanh(((freqs - cutoff_hz) / width) * 1.5) + 1.0)
+    curve = ((1.0 - w) * g_low + w * g_hf).astype(np.float32)
+
+    sig = np.asarray(x, dtype=np.float32).reshape(-1)
+    n = len(sig)
+    out = np.empty(n, dtype=np.float32)
+    block = max(n_fft, int(sr * block_s))
+    pos = 0
+    while pos < n:
+        end = min(n, pos + block)
+        spec = _stft_block(sig[pos:end], win, hop) * curve[None, :]
+        out[pos:end] = _istft_block(spec, win, hop, end - pos)
+        pos = end
+    return out
 
 
 def _import_audiosronnx():
@@ -141,12 +227,22 @@ def release_thread_models() -> None:
         cache.clear()
 
 
+def _rebalance(y: np.ndarray, out_rate: int, x_ref: np.ndarray, ref_rate: int,
+               cutoff_hz: float, hf_target_db: float) -> np.ndarray:
+    """算增益并施加——`upscale` 里三个出口共用这一处，避免逻辑分叉。"""
+    g_low, g_hf = balance_gains(y, out_rate, x_ref, ref_rate,
+                                cutoff_hz=cutoff_hz, hf_target_db=hf_target_db)
+    return apply_balance(y, out_rate, g_low, g_hf, cutoff_hz=cutoff_hz)
+
+
 def upscale(
     engine_id: str,
     catalog: Catalog,
     mono: np.ndarray,
     sample_rate: int,
     *,
+    cutoff_hz: float = BALANCE_CUTOFF_HZ,
+    hf_target_db: float = HF_TARGET_DB,
     progress=None,
     cancel=None,
 ) -> tuple[np.ndarray, int]:
@@ -154,6 +250,9 @@ def upscale(
 
     传入必须是**已经降噪过**的信号——MossFormer2_SR 一类的官方说明都要求输入是干净语音，
     所以流水线里的顺序是"先降噪、再上采样"。
+
+    输出会经过 `balance_gains`/`apply_balance` 做频段平衡：模型原始输出会把生成频段
+    抬到远高于通带（见文件头的实测数字），不修的话听感就是"只剩高频"。
     """
     x = np.ascontiguousarray(np.asarray(mono, dtype=np.float32).reshape(-1))
     if x.size == 0:
@@ -168,6 +267,7 @@ def upscale(
             raise RuntimeError("已取消")
         y, rate = model.upscale(x, sample_rate)
         y = np.asarray(y, dtype=np.float32).reshape(-1)
+        y = _rebalance(y, int(rate), x, sample_rate, cutoff_hz, hf_target_db)
         if progress:
             progress(1.0, "带宽扩展完成")
         return y, int(rate)
@@ -178,7 +278,8 @@ def upscale(
     out_rate = None
     out = None
     weights = None
-    pos = 0
+    gains: tuple[float, float] | None = None   # 由**首段**算出，之后所有段共用，
+    pos = 0                                    # 这样块与块之间不会有电平台阶
     total = max(1, int(np.ceil((n - overlap) / step)))
     idx = 0
 
@@ -188,6 +289,12 @@ def upscale(
         seg = x[pos:min(n, pos + chunk)]
         y, rate = model.upscale(seg, sample_rate)
         y = np.asarray(y, dtype=np.float32).reshape(-1)
+        if gains is None:
+            g_low, g_hf = balance_gains(y, int(rate), seg, sample_rate,
+                                        cutoff_hz=cutoff_hz,
+                                        hf_target_db=hf_target_db)
+            gains = (g_low, g_hf)
+        y = apply_balance(y, int(rate), gains[0], gains[1], cutoff_hz=cutoff_hz)
 
         if out is None:
             out_rate = int(rate)
@@ -219,7 +326,9 @@ def upscale(
 
     if out is None:                            # 理论上不会发生
         y, rate = model.upscale(x, sample_rate)
-        return np.asarray(y, dtype=np.float32).reshape(-1), int(rate)
+        y = np.asarray(y, dtype=np.float32).reshape(-1)
+        y = _rebalance(y, int(rate), x, sample_rate, cutoff_hz, hf_target_db)
+        return y, int(rate)
 
     out /= np.maximum(weights, 1e-6)
     if progress:

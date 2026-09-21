@@ -37,6 +37,39 @@ from .modelstore import Catalog
 ProgressCb = Callable[[float, str], None]
 CancelCb = Callable[[], bool]
 
+# 逐声道合并 / 对齐时允许的长度差（帧）。超过就抛错而不是静默截断：
+# 声道之间长度不一致一定是缺陷（曾经发生过"第二路只有第一路 1/3 长"，而
+# _stack 静默截断 + align_to 用原音补尾把它掩盖成了"后半段是原音"）。
+# 取 4800 帧（48 kHz 下 100 ms）是为了留足余量容纳模型固有的帧对齐截断——
+# DeepFilterNet 的延迟补偿会丢末尾约 30 ms（48 kHz 下 1440 帧），必须容得下；
+# 同时远小于任何真实缺陷（那次是 1,000,000 帧量级）。
+LENGTH_TOLERANCE = 4800
+
+
+def _effective_rate(in_rate: int, n_in: int, n_out: int,
+                    reported: int | float | None = None,
+                    tol: float = 0.02) -> int:
+    """确定引擎的**真实输出采样率**：以长度比为准，但只在必要时覆盖上报值。
+
+    实测（2026-09-21）：sherpa 的 DPDFNet 喂 48 kHz 时**上报 16000 Hz，却返回与
+    输入相同样本数**的 48 kHz 数据——灌 1 kHz 正弦进去，按 48000 Hz 回读仍是
+    1000.1 Hz，长度比 1.0000。项目 README 里「输出率 = 模型原生率」的说法是错的。
+
+    这个不一致正是下游带宽扩展被搞坏的源头：拿 16000 当 48 kHz 数据的率去重采样，
+    等于把整个频谱上移 3 倍。用长度比推断对 DeepFilterNet（16k 输入→48k 数据，
+    比值 3.0）与 DSP 基线（比值 1.0）同样成立。
+
+    但**不能无条件用推导值**：带宽扩展的输出样本数不会是精确的整数倍（实测
+    novasr 给 115,085 而非 115,089），四舍五入会把 48000 变成 47998，反而引入
+    新错误。所以只在「推导值与上报值相差超过 tol」时才用推导值。
+    """
+    if n_in <= 0:
+        return int(in_rate)
+    derived = float(in_rate) * float(n_out) / float(n_in)
+    if reported and abs(derived - float(reported)) <= max(1.0, tol * float(reported)):
+        return int(reported)
+    return int(round(derived))
+
 
 @dataclass
 class PipelineOptions:
@@ -53,6 +86,11 @@ class PipelineOptions:
     # --- 后处理：带宽扩展（修复类，会改写内容；None = 关闭）-----------
     bwe_id: str | None = None
     bwe_cutoff_hz: float = 8000.0
+    # 生成频段相对通带的目标电平（dB，负值）。三个 BWE 引擎的原始输出都把生成
+    # 频段抬到远高于通带（实测 lavasr 在 12–20 kHz 高 +89 dB，且它自己已削顶到
+    # 满刻度），听感就是"只剩高频"。默认压到通带之下 12 dB（语音在 500 Hz 以上
+    # 约每倍频程 −6 dB，生成频段本就不该压过通带）。
+    bwe_hf_target_db: float = -12.0
 
     # --- 后处理：听感增强（修饰，不改写内容）-------------------------
     shelf_enabled: bool = False
@@ -129,23 +167,56 @@ class PipelineResult:
         return self.elapsed / dur if dur else float("nan")
 
 
-def align_to(enhanced: np.ndarray, source: np.ndarray) -> np.ndarray:
-    """把 enhanced 对齐到 source 的长度。
+def align_to(enhanced: np.ndarray, source: np.ndarray, *,
+             src_rate: int, enh_rate: int,
+             note: Callable[[str], None] | None = None) -> np.ndarray:
+    """把 enhanced 对齐到 source 的**时长**（不是样本数）。
+
+    为什么必须按时间对齐：带宽扩展会把采样率从 16 kHz 提到 48 kHz —— 样本数变
+    3 倍、**时长不变**。早先这里直接比较样本数，于是 48 kHz 的扩展输出被
+    `enhanced[:len(source)]` 截成 **1/3 时长**；因为随后的断言只看频段内容、
+    不看时长，这个静默的数据丢失一直没被发现（是加了长度守卫之后才暴露的）。
 
     模型可能截掉末尾不足一帧的部分（sherpa 约一个 hop、DeepFilterNet 约 30 ms），
-    补齐时用源信号对应尾部，避免在结尾留一段可听见的静音。
+    补齐时用源信号对应尾部，避免在结尾留一段可听见的静音。但补尾量过大时必须抛错：
+    那说明上游出了实质缺陷，而"用原音补尾"会把它掩盖成"后半段是原音"。
     """
-    if len(enhanced) == len(source):
+    target_n = int(round(len(source) * float(enh_rate) / float(src_rate)))
+    if len(enhanced) == target_n:
         return enhanced
-    if len(enhanced) > len(source):
-        return enhanced[:len(source)]
-    pad = len(source) - len(enhanced)
-    tail = source[len(enhanced):]
-    if enhanced.ndim == 2 and tail.ndim == 1:
+    if len(enhanced) > target_n:
+        over = len(enhanced) - target_n
+        if over > LENGTH_TOLERANCE:
+            raise RuntimeError(
+                f"处理后比源长 {over} 帧（源 {len(source)}@{src_rate}Hz → 期望 "
+                f"{target_n} 帧@{enh_rate}Hz，实际 {len(enhanced)}），超出容差 "
+                f"{LENGTH_TOLERANCE}；这是上游缺陷，已拒绝静默裁掉。"
+            )
+        return enhanced[:target_n]
+    pad = target_n - len(enhanced)
+    if pad > max(LENGTH_TOLERANCE, int(0.01 * target_n)):
+        raise RuntimeError(
+            f"处理后比源短 {pad} 帧（源 {len(source)}@{src_rate}Hz → 期望 "
+            f"{target_n} 帧@{enh_rate}Hz，实际 {len(enhanced)}），补尾量超过 1%"
+            f"（或 {LENGTH_TOLERANCE} 帧）。用原音补尾会把上游缺陷掩盖成"
+            "「后半段是原音」，已拒绝。"
+        )
+    if pad == 0:
+        return enhanced
+    # 补尾取自源信号尾部；两边采样率不同时先把这段尾巴重采样到目标率
+    take_src = max(1, int(round(pad * float(src_rate) / float(enh_rate))))
+    tail = source[len(source) - take_src:]
+    if int(src_rate) != int(enh_rate):
+        tail = media_io.resample(np.asarray(tail, dtype=np.float32),
+                                 int(src_rate), int(enh_rate))
+    if enhanced.ndim == 2 and np.asarray(tail).ndim == 1:
         tail = media_io.to_stereo(tail)
-    elif enhanced.ndim == 1 and tail.ndim == 2:
+    elif enhanced.ndim == 1 and np.asarray(tail).ndim == 2:
         tail = media_io.to_mono(tail)
-    return np.concatenate([enhanced, tail[:pad]])
+    if note:
+        note(f"[注意] 处理后比源短 {pad} 帧（期望 {target_n}，实际 {len(enhanced)}），"
+             "已用原音尾部补齐。")
+    return np.concatenate([enhanced, np.asarray(tail)[:pad]])
 
 
 def _tick(progress: ProgressCb | None, frac: float, msg: str) -> None:
@@ -165,10 +236,28 @@ def _as_channels(samples: np.ndarray) -> list[np.ndarray]:
     return [np.ascontiguousarray(samples[:, i], dtype=np.float32) for i in range(samples.shape[1])]
 
 
-def _stack(channels: list[np.ndarray]) -> np.ndarray:
-    n = min(len(c) for c in channels)
+def _stack(channels: list[np.ndarray], *, what: str = "该阶段") -> np.ndarray:
+    """把逐声道结果合并回 (frames, ch)。
+
+    **长度差超过 LENGTH_TOLERANCE 帧就抛错**，而不是静默截断到较短那一路。
+    这条守卫是有来历的：带宽扩展的声道循环曾把上一声道的输出采样率当成下一
+    声道的输入采样率，导致第二路长度只有第一路的 1/3；而这里静默截断、下游
+    `align_to` 又用原始音频补尾，两者叠加把「一路正常一路坏」的文件**无声地**
+    写进了磁盘（用户实测到了坏文件，日志里却什么都没有）。
+    """
+    if not channels:
+        raise ValueError("没有声道可合并")
     if len(channels) == 1:
-        return channels[0][:n]
+        return channels[0]
+    lens = [len(c) for c in channels]
+    spread = max(lens) - min(lens)
+    if spread > LENGTH_TOLERANCE:
+        raise RuntimeError(
+            f"{what}的各声道长度不一致：{lens}（相差 {spread} 帧，"
+            f"容差 {LENGTH_TOLERANCE}）。逐声道处理必须对每个声道产生同样的长度，"
+            "静默截断会产出「一路正常一路坏」的文件，已拒绝写出。"
+        )
+    n = min(lens)
     return np.ascontiguousarray(np.stack([c[:n] for c in channels], axis=1), dtype=np.float32)
 
 
@@ -277,7 +366,8 @@ def run(
             # 这个文件本身就是本次要产出的东西。复用发生在带宽扩展阶段之前，此时
             # target_rate 还是源采样率，按它重采样会把上一轮写出的 48 kHz 带宽扩展结果
             # 降回 16 kHz —— 等于把带宽扩展白做，而且这个偏差会被记录下来一直复用下去。
-            y = align_to(np.asarray(prev.samples, dtype=np.float32), source)
+            y = align_to(np.asarray(prev.samples, dtype=np.float32), source,
+                         src_rate=sr, enh_rate=int(prev.sample_rate), note=note)
             elapsed = time.perf_counter() - t_start
             _tick(progress, 1.0, "已复用已有结果")
             return PipelineResult(
@@ -376,8 +466,12 @@ def run(
         )
         outs.append(np.asarray(y, dtype=np.float32))
 
-    enhanced = _stack(outs)
-    cur_rate = engine_out_rate
+    enhanced = _stack(outs, what="降噪")
+    # 不信引擎上报的率，用长度比推真实率（见 _effective_rate 的实测记录）
+    cur_rate = _effective_rate(sr, len(source), len(enhanced), reported=engine_out_rate)
+    if cur_rate != int(engine_out_rate):
+        note(f"[注意] 引擎上报输出率 {engine_out_rate} Hz，但按长度比实际是 "
+             f"{cur_rate} Hz，已按实际值处理（sherpa 的 DPDFNet 会这样错报）。")
     stages.append("denoise")
 
     # --- 4b. 后处理：带宽扩展（修复类，会改写内容）--------------------
@@ -400,6 +494,14 @@ def run(
             bchans = _as_channels(enhanced) if options.keep_channels else [media_io.to_mono(enhanced)]
             b_frac = 0.62
             b_outs: list[np.ndarray] = []
+            # ★ 所有声道的**输入**率是同一个值，循环前快照一次，循环内绝不改写它。
+            # 之前这里写成 `by, cur_rate = bwe_eng.process(bch, cur_rate, ...)`，
+            # 于是把上一声道的**输出**率当成了下一声道的输入率。三个 BWE 引擎的
+            # 输出率恒为 48 kHz，所以只要上游降噪的输出率不是 48 kHz，第二路就会
+            # 被宣告错误的输入率——实测后果是整个频谱被上移 3 倍、长度变成 1/3、
+            # 两声道互不相关，听感就是「一路正常、一路坏」。
+            b_in_rate = cur_rate
+            b_out_rates: set[int] = set()
             for bi, bch in enumerate(bchans):
                 _check(cancel)
 
@@ -408,12 +510,28 @@ def run(
                     prefix = f"[声道 {_i + 1}/{len(bchans)}] " if len(bchans) > 1 else ""
                     _tick(progress, b_frac + span * f, prefix + msg)
 
-                by, cur_rate = bwe_eng.process(
-                    bch, cur_rate, options.engine,
+                by, ch_rate = bwe_eng.process(
+                    bch, b_in_rate, options.engine,
+                    cutoff_hz=options.bwe_cutoff_hz,
+                    hf_target_db=options.bwe_hf_target_db,
                     progress=b_progress, cancel=cancel,
                 )
-                b_outs.append(np.asarray(by, dtype=np.float32))
-            enhanced = _stack(b_outs)
+                by = np.asarray(by, dtype=np.float32).reshape(-1)
+                # 同样用长度比推真实率，不信上报值（三个引擎都上报 48 kHz，
+                # 但喂进去的率不同时它们的长度比不同）
+                b_out_rates.add(_effective_rate(b_in_rate, len(bch), len(by),
+                                                reported=ch_rate))
+                b_outs.append(by)
+
+            if len(b_out_rates) != 1:
+                raise RuntimeError(
+                    f"带宽扩展在各声道上报了不同的输出采样率 {sorted(b_out_rates)}，"
+                    "这会让声道之间不一致（听感上是「一路正常、一路坏」），已拒绝写出。"
+                )
+            cur_rate = b_out_rates.pop()
+            enhanced = _stack(b_outs, what="带宽扩展")
+            note(f"带宽扩展输出 {cur_rate} Hz；生成频段已压到通带之下 "
+                 f"{options.bwe_hf_target_db:g} dB（修正引擎原始输出的电平失衡）。")
         stages.append(f"bwe:{options.bwe_id}")
         # 带宽扩展的输出采样率就是要交付的采样率。默认目标率是**源采样率**，
         # 若不在这里覆盖，刚补出来的高频会在下一步被重新采样掉，等于白做
@@ -475,7 +593,7 @@ def run(
         enhanced = media_io.resample(enhanced, cur_rate, target_rate)
 
     # 与原音对齐长度：引擎可能截掉末尾不足一帧的部分
-    enhanced = align_to(enhanced, source)
+    enhanced = align_to(enhanced, source, src_rate=sr, enh_rate=target_rate, note=note)
 
     enhanced_stats = dsp.analyze(enhanced, target_rate)
 

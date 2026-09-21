@@ -883,9 +883,13 @@ class MainWindow(QMainWindow):
             self.spn_mudcut.setValue(0.0)
             self.chk_comp.setChecked(True)
             self.cmb_bwe.setCurrentIndex(self._bwe_default_index)
+            # 按**实际**选择记录日志：一个带宽扩展引擎都没有时，_bwe_default_index
+            # 会停在 0（即「关闭」），旧文案却仍宣称"已开启带宽扩展"。
+            bwe_on = self.cmb_bwe.currentData()
             self._log(
                 f"已套用预设：试听用（增强）—— 带宽扩展「{self.cmb_bwe.currentText()}」"
-                "（生成式，会编造高频，仅用于试听）"
+                + ("（生成式，会编造高频，仅用于试听）" if bwe_on
+                   else "（模型清单里没有可用的带宽扩展引擎，本次只做了 EQ 与压缩）")
             )
 
     def _selected_engine(self):

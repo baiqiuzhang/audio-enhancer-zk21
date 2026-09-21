@@ -27,6 +27,13 @@ OUTPUT_DIRNAME = "AudioEnhancer_zk21"
 MANIFEST_NAME = "manifest.json"
 MANIFEST_SCHEMA = 1
 
+# 处理链语义版本：**凡是改动会改变处理结果的代码，都必须递增它。**
+# 指纹只编码参数，看不见代码。不递增就等于"修了缺陷但仍在复用算坏的缓存"——
+# 这不是假想：带宽扩展的声道采样率回灌缺陷修好后，坏文件确实会被原样复用。
+#   1 → 2：修正 BWE 声道采样率回灌；生成频段电平平衡（压到通带之下）；
+#          逐声道长度不一致改为抛错而不是静默截断
+CHAIN_VERSION = 2
+
 # 文件名总长上限（保守，避免路径过长；超出就退化为只留指纹）
 MAX_FILENAME = 120
 MAX_STEM = 60
@@ -165,6 +172,10 @@ def spec_dict(input_path: str, options, stream_index: int | None = None,
 
     **刻意排除** num_threads、并行 worker 数、输出目录、界面状态——它们不改变结果，
     纳入会导致"改一下线程数就要重算一遍"。
+
+    但**处理链的语义版本必须纳入**：指纹只看参数，看不见代码缺陷。修掉一个会
+    改变结果的处理缺陷后，若不递增 `CHAIN_VERSION`，应用会直接复用**已经算错的
+    缓存**（实测发生过：带宽扩展的声道采样率回灌缺陷修好后，旧坏文件仍会被复用）。
     """
     try:
         size = os.path.getsize(input_path)
@@ -172,6 +183,7 @@ def spec_dict(input_path: str, options, stream_index: int | None = None,
         size = 0
 
     return _jsonable({
+        "chain_version": CHAIN_VERSION,
         "input": {
             # 身份用**绝对路径**（规范化、大小写折叠）而不是"文件名+大小"。
             # 原本想用文件名+大小换取"整个文件夹移走仍可复用"，但实测发现：
@@ -193,6 +205,7 @@ def spec_dict(input_path: str, options, stream_index: int | None = None,
             "bwe": {
                 "id": options.bwe_id,
                 "cutoff_hz": float(options.bwe_cutoff_hz),
+                "hf_target_db": float(getattr(options, "bwe_hf_target_db", -12.0)),
             },
             "perceptual": {
                 "shelf_enabled": bool(options.shelf_enabled),
