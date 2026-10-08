@@ -13,3 +13,13 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+
+# 交付相关（把仓库根整个复制出去时不会再带走的临时件）
+*.tmp
+*.bak
+*.bak-*
+
+# 代理/会话工作目录，不随源码发布
+.dsh/
+AGENTS.md
+*.log

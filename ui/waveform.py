@@ -22,19 +22,32 @@ TEXT = QColor(theme.TEXT_DIM)
 
 
 def _envelope(x: np.ndarray, width: int) -> tuple[np.ndarray, np.ndarray]:
-    """把信号压成每像素列的 (min, max) 包络。"""
-    n = len(x)
+    """把信号压成每像素列的 (min, max) 包络。
+
+    2-D 输入按**声道均值**再取包络（与"先降混成单声道、再求包络"逐位等价），
+    但**不再物化那份整段单声道副本**：69 分钟 48 kHz 立体声是 763 MB/条轨，
+    而 `set_data` 是在导入/处理完成时于 UI 线程同步执行的，那份拷贝还要搭上 1–2 s 卡顿
+    （2026-10-01 实测）。只有"信号比视图还短"（n < width，几千个样本）时才降混，
+    那时拷贝的开销可以忽略。
+    """
+    a = x
+    n = len(a)
     if width <= 0:
         return np.zeros(0, np.float32), np.zeros(0, np.float32)
     if n == 0:
         return np.zeros(width, np.float32), np.zeros(width, np.float32)
     if n < width:
+        mono = a.mean(axis=1) if a.ndim == 2 else a
         idx = np.linspace(0, n - 1, width)
-        y = np.interp(idx, np.arange(n), x).astype(np.float32)
+        y = np.interp(idx, np.arange(n), mono).astype(np.float32)
         return y, y
     k = n // width
     usable = k * width
-    block = x[:usable].reshape(width, k)
+    if a.ndim == 2:
+        # (width, k, ch) → 声道均值 → (width, k)；reshape 是视图，只在 mean 处产生结果
+        block = a[:usable].reshape(width, k, a.shape[1]).mean(axis=2)
+    else:
+        block = a[:usable].reshape(width, k)
     return block.min(axis=1).astype(np.float32), block.max(axis=1).astype(np.float32)
 
 
@@ -60,8 +73,8 @@ class WaveformView(QWidget):
 
     # ------------------------------------------------------------------
     def set_data(self, source: np.ndarray | None, enhanced: np.ndarray | None, rate: int) -> None:
-        self._src = self._mono(source)
-        self._enh = self._mono(enhanced)
+        self._src = self._samples(source)
+        self._enh = self._samples(enhanced)
         self._rate = max(1, int(rate))
         self._duration = max(
             (len(v) for v in (self._src, self._enh) if v is not None), default=0
@@ -77,13 +90,15 @@ class WaveformView(QWidget):
         self.update()
 
     @staticmethod
-    def _mono(x: np.ndarray | None) -> np.ndarray | None:
+    def _samples(x: np.ndarray | None) -> np.ndarray | None:
+        """只保证 dtype/连续性，**不降混**（降混放到求包络时按列做，见 _envelope）。
+
+        对已经是 float32 连续数组的输入，`ascontiguousarray` 不复制 —— 所以这里对
+        69 分钟素材是零拷贝；旧实现会在这一步各留一份 763 MB 的单声道副本。
+        """
         if x is None:
             return None
-        a = np.asarray(x, dtype=np.float32)
-        if a.ndim == 2:
-            a = a.mean(axis=1)
-        return np.ascontiguousarray(a, dtype=np.float32)
+        return np.ascontiguousarray(np.asarray(x, dtype=np.float32))
 
     def _invalidate(self) -> None:
         self._cache.clear()

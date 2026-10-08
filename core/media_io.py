@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -114,6 +115,11 @@ def remux_refusal_reason(ext: str) -> str | None:
 
 class MediaError(RuntimeError):
     """无法探测或解码该媒体文件。"""
+
+
+# 取消异常与 dsp/engines 共用同一个类型（core/errors.py 说明了为什么不能各定义一份：
+# 早先两处同名异常导致"取消"在部分阶段被 pipeline/worker 当成"处理失败"）。
+from .errors import Cancelled  # noqa: E402  （放在类定义之后仅为阅读顺序）
 
 
 @dataclass
@@ -348,13 +354,19 @@ def _stream_duration(st) -> float | None:
 # 解码
 # ---------------------------------------------------------------------------
 
-def decode(path: str, stream_index: int | None = None, mono: bool = False) -> AudioData:
+def decode(path: str, stream_index: int | None = None, mono: bool = False,
+           cancel=None) -> AudioData:
     """把媒体文件解码为 float32。
 
     - 视频文件：提取指定音轨（默认第一条），画面被忽略。
     - 多声道（>2）统一降混为立体声；`mono=True` 时再降为单声道。
+    - `cancel`：可选回调（返回 True 表示已取消）。长素材解码是秒级到十几秒的操作
+      （实测 69 分钟视频 14.61 s），此前没有任何中途退出的机会——用户点取消要等它跑完。
     """
     ext = os.path.splitext(path)[1].lower()
+
+    if cancel and cancel():
+        raise Cancelled("已取消")
 
     if ext in _SF_EXTS and stream_index is None:
         try:
@@ -364,7 +376,7 @@ def decode(path: str, stream_index: int | None = None, mono: bool = False) -> Au
         except Exception:
             pass  # 落到 PyAV
 
-    return _decode_pyav(path, stream_index=stream_index, mono=mono)
+    return _decode_pyav(path, stream_index=stream_index, mono=mono, cancel=cancel)
 
 
 def _decode_soundfile(path: str, mono: bool) -> AudioData | None:
@@ -378,7 +390,25 @@ def _decode_soundfile(path: str, mono: bool) -> AudioData | None:
     return AudioData(samples=np.ascontiguousarray(samples, dtype=np.float32), sample_rate=int(rate))
 
 
-def _decode_pyav(path: str, stream_index: int | None, mono: bool) -> AudioData:
+def _expected_frames(stream, rate: int) -> int:
+    """按容器上报的时长估算该音轨的总帧数；拿不到或不合理时返回 0。
+
+    只用于"预分配输出缓冲"这一件事，所以宁可返回 0（退回收集+拼接），
+    也不要给一个可能偏小的数字——偏小时下面的 `_sink` 会把多出来的部分另存再拼，
+    正确性不受影响，但峰值就不省了。
+    """
+    try:
+        dur = float(stream.duration * stream.time_base) if stream.duration else 0.0
+    except Exception:                                  # noqa: BLE001
+        return 0
+    if dur <= 0 or rate <= 0:
+        return 0
+    frames = int(round(dur * rate))
+    return frames if frames > 0 else 0
+
+
+def _decode_pyav(path: str, stream_index: int | None, mono: bool,
+                 cancel=None) -> AudioData:
     av = _av()
     try:
         with av.open(path) as container:
@@ -407,17 +437,57 @@ def _decode_pyav(path: str, stream_index: int | None, mono: bool) -> AudioData:
             # 避免自己手写各采样格式的归一化。
             resampler = av.AudioResampler(format="flt", layout=layout, rate=rate)
 
-            chunks: list[np.ndarray] = []
-            for frame in container.decode(st):
-                for converted in _resample_flush(resampler, frame):
-                    chunks.append(_frame_to_2d(converted))
-            for converted in _resample_flush(resampler, None):
-                chunks.append(_frame_to_2d(converted))
+            # **预分配输出缓冲**（2026-10-01 修正）：旧写法把所有 chunk 收进 list 再
+            # `np.concatenate`，实测峰值 = 结果字节的 **2.01×**（1200 s 立体声实测 884.8 MB
+            # vs 结果 439 MB；69 分钟视频就是 3.2 GB 的瞬时分配）。容器通常能报出总时长，
+            # 于是可以按 `时长 × 采样率` 一次分配好再逐块写入，峰值降到 1× 左右。
+            # 拿不到时长（少数流没有 duration）就退回旧的"收集 + 拼接"。
+            want = _expected_frames(st, rate)
+            samples: np.ndarray | None = None
+            filled = 0
+            chunks: list[np.ndarray] = [] if want <= 0 else None
 
-            if not chunks:
+            def _sink(block: np.ndarray) -> None:
+                nonlocal filled
+                if samples is None:
+                    chunks.append(block)                 # type: ignore[union-attr]
+                    return
+                take = min(len(block), len(samples) - filled)
+                if take > 0:
+                    samples[filled:filled + take] = block[:take]
+                    filled += take
+                if take < len(block):
+                    # 容器低估了长度（少数流 duration 不准）：多出来的部分另存，
+                    # 最后与主缓冲拼一次 —— 正确性优先，不让预分配改变结果。
+                    chunks.append(block[take:])          # type: ignore[union-attr]
+
+            if want > 0:
+                n_ch = 1 if layout == "mono" else 2
+                samples = np.zeros((want, n_ch), dtype=np.float32)
+                chunks = []
+
+            for n_frame, frame in enumerate(container.decode(st)):
+                # 每 16 帧看一次取消标志：视频长素材解码是十几秒级，必须能中途退出
+                if cancel is not None and (n_frame & 0xF) == 0 and cancel():
+                    raise Cancelled("已取消（解码中断）")
+                for converted in _resample_flush(resampler, frame):
+                    _sink(_frame_to_2d(converted))
+            for converted in _resample_flush(resampler, None):
+                _sink(_frame_to_2d(converted))
+
+            if samples is not None:
+                samples = samples[:filled]
+            if chunks:
+                extra = np.concatenate(chunks, axis=0).astype(np.float32, copy=False) \
+                    if chunks else None
+                if samples is None:
+                    samples = extra
+                elif extra is not None and len(extra):
+                    samples = np.concatenate([samples, extra], axis=0)
+            if samples is None or len(samples) == 0:
                 raise MediaError("该音轨没有可解码的音频数据。")
 
-            samples = np.concatenate(chunks, axis=0).astype(np.float32, copy=False)
+            samples = np.asarray(samples, dtype=np.float32)
             if mono:
                 samples = samples.mean(axis=1).astype(np.float32, copy=False)
             elif samples.shape[1] == 1:
@@ -537,6 +607,16 @@ def write_audio(
 
     `subtype` 可覆盖默认值——给 DeepFilterNet 传临时文件时必须用 "FLOAT"：
     它的 Rust 侧只支持到 16-bit，喂 PCM_24 会直接 panic（已实测，TooWide）。
+
+    **原子写**（2026-10-01 修正）：先写同目录的 `<stem>.part<pid>_<tid><ext>`，成功后再
+    `os.replace` 到最终名。为什么必须这么做——pipeline 判断"算过没有"**只看文件名里的
+    指纹**（`outputs.find_reusable` / `pipeline.py` 的复用分支都只 `os.path.isfile`）：
+    非原子写时，磁盘写满、进程被杀、断电都会在**最终文件名**上留下半截文件，而它下次会被
+    当成"参数与已有结果完全一致，直接复用（不重算）"。轻度截断会被 `align_to` 用原音尾部
+    静默补齐（此后一直复用一份悄悄少了若干秒的产物），重度截断则会让复用分支抛
+    「这是上游缺陷，已拒绝静默裁掉」——而用户不知道要删哪个文件，于是**每次重试都卡在同一处**。
+    临时文件沿用扩展名（libsndfile 靠扩展名选格式），且 `.part` 中缀让
+    `outputs.parse_filename` 认不出指纹，扫描时天然被忽略。
     """
     ext = os.path.splitext(path)[1].lower()
     if ext not in OUTPUT_SUBTYPES:
@@ -556,7 +636,17 @@ def write_audio(
     if ext == ".mp3":
         kwargs["bitrate_mode"] = "VBR"
 
-    sf.write(path, data, int(sample_rate), **kwargs)
+    tmp = f"{os.path.splitext(path)[0]}.part{os.getpid()}_{threading.get_ident()}{ext}"
+    try:
+        sf.write(tmp, data, int(sample_rate), **kwargs)
+        os.replace(tmp, path)
+    except BaseException:
+        # 失败只清理**自己**的临时文件；最终文件名下永远不出现半截产物
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -567,6 +657,7 @@ def write_video_with_audio(
     sample_rate: int,
     *,
     replace_stream_index: int | None = None,
+    cancel=None,
 ) -> str:
     """把音频写回视频容器：画面与其它流**原样复制**，只替换一条音轨。
 
@@ -577,6 +668,9 @@ def write_video_with_audio(
       不补这两项会静默丢掉语言标签与 default/forced 标记，播放器可能猜错默认音轨。
     - `dst` 与 `src` **不能是同一个文件**：同一路径既以 r 打开又被 w 截断会毁掉源视频。
       入口硬断言，并且用「临时文件 + os.replace」原子写，绝不半截收场。
+    - `cancel`：可选回调。写回视频是分钟级操作（实测 AAC 编码约 30× 实时，69 分钟素材
+      约 136 s），此前完全不可中断；现在在视频流复制与音频编码两个循环里都会检查，
+      中断时由下面的 `except BaseException` 清理临时文件。
     """
     av = _av()
     if os.path.abspath(src) == os.path.abspath(dst):
@@ -660,9 +754,13 @@ def write_video_with_audio(
             # 所有流都必须在**第一次 mux 之前**建好：首次 mux 会写容器头部
             # （avformat_write_header），之后再 add_stream 的流既不在头部里、
             # time_base 也不会被初始化，mux 时会报 "Cannot rebase to zero time"。
+            n_pkt = 0
             for pkt in inc.demux(*keep):
                 if pkt.dts is None:          # flush 用的空包
                     continue
+                if cancel is not None and n_pkt % 64 == 0 and cancel():
+                    raise Cancelled("已取消（写回视频中断）")
+                n_pkt += 1
                 pkt.stream = omap[pkt.stream.index]
                 outc.mux(pkt)                # timebase 换算由 PyAV 负责
 
@@ -670,6 +768,8 @@ def write_video_with_audio(
             pos = 0
             total = int(arr.shape[0])
             while pos < total:
+                if cancel is not None and cancel():
+                    raise Cancelled("已取消（写回视频中断）")
                 chunk = np.ascontiguousarray(arr[pos:pos + step, :].T, dtype=np.float32)
                 frame = av.AudioFrame.from_ndarray(chunk, format="fltp", layout=layout)
                 frame.sample_rate = rate

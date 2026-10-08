@@ -86,7 +86,8 @@ def peak_rss_mb() -> float | None:
 
 
 def build_options(preset: str, engine_id: str, threads: int,
-                  bwe: str | None, write: bool, out_dir: str) -> pipeline.PipelineOptions:
+                  bwe: str | None, write: bool, out_dir: str,
+                  parallel: str = "auto") -> pipeline.PipelineOptions:
     o = pipeline.PipelineOptions(
         engine_id=engine_id,
         engine=pipeline.EngineParams(num_threads=threads),
@@ -99,6 +100,7 @@ def build_options(preset: str, engine_id: str, threads: int,
         write_output=write,
         reuse_existing=False,
         output_dir=out_dir,
+        parallel_channels=parallel,
     )
     if preset == "denoise":
         o.trim_silence = False
@@ -119,13 +121,13 @@ def build_options(preset: str, engine_id: str, threads: int,
 
 
 def run_one(media: str, catalog, preset: str, engine_id: str, threads: int,
-            bwe: str | None, write: bool) -> dict:
+            bwe: str | None, write: bool, parallel: str = "auto") -> dict:
     out_dir = tempfile.mkdtemp(prefix="ae_meas_") if write else ""
-    label = f"{preset}/线程{threads}" + (f"/{bwe}" if bwe else "")
+    label = f"{preset}/线程{threads}" + (f"/{bwe}" if bwe else "") + f"/声道{parallel}"
     print(f"\n{'=' * 72}\n配置 {label}\n{'=' * 72}", flush=True)
     t0 = time.perf_counter()
     try:
-        options = build_options(preset, engine_id, threads, bwe, write, out_dir)
+        options = build_options(preset, engine_id, threads, bwe, write, out_dir, parallel)
         result = pipeline.run(media, catalog, options)
     finally:
         wall = time.perf_counter() - t0
@@ -151,6 +153,7 @@ def run_one(media: str, catalog, preset: str, engine_id: str, threads: int,
         "engine": engine_id,
         "threads": threads,
         "bwe": next((s.split(":", 1)[1] for s in result.stages if s.startswith("bwe:")), None),
+        "parallel": parallel,
         "duration_s": round(dur, 2),
         "wall_s": round(wall, 2),
         "elapsed_s": round(result.elapsed, 2),
@@ -191,6 +194,8 @@ def main() -> int:
     ap.add_argument("--threads", default="2",
                     help="逗号分隔的线程数列表，例如 2,4（同一进程内依次跑）")
     ap.add_argument("--bwe", default=None, help="覆盖带宽扩展引擎 id（默认 novasr）")
+    ap.add_argument("--parallel", default="auto", choices=["auto", "on", "off"],
+                    help="声道并行策略（默认 auto：按空闲内存决定；off 用于隔离测量）")
     ap.add_argument("--no-write", action="store_true", help="不写盘（省去写出与磁盘占用）")
     ap.add_argument("--max-seconds", type=float, default=0.0,
                     help="只取前 N 秒（0 = 整段）；用于长素材上的引擎选型")
@@ -220,7 +225,7 @@ def main() -> int:
         for th in threads_list:
             summaries.append(
                 run_one(media, catalog, args.preset, args.engine, th, args.bwe,
-                        write=not args.no_write)
+                        write=not args.no_write, parallel=args.parallel)
             )
             gc.collect()
     finally:

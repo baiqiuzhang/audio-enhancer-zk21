@@ -299,13 +299,156 @@ def main() -> int:
             timeout_s=180, label="模型下载",
         )
         check("界面下载完成且校验通过", ok)
-        check("下载后状态回到「已就绪」",
-              "已就绪" in win.list_engines.item(row).text())
+        # 状态文字由**排队投递**的 finished_all 信号触发刷新，直接断言会偶发失败
+        # （实测 4 连跑里 1 次：文件已就绪、列表文字还没刷）。这里等它刷出来。
+        shot = wait_until(app, lambda: "已就绪" in win.list_engines.item(row).text(),
+                          timeout_s=15, label="下载后状态刷新")
+        check("下载后状态回到「已就绪」", shot,
+              win.list_engines.item(row).text().split("\n")[0])
     finally:
         if os.path.isfile(backup):
             if os.path.isfile(target):
                 os.remove(target)
             shutil.move(backup, target)
+
+    print("\n9. 输出模式：逐文件复位 + 运行前可见（用户事故的根因）")
+    # 事故：manifest 里 video_out=true、chain_label 含「写回视频」，用户却认为没勾。
+    # 根因是复选框状态跨文件粘滞（_on_analyzed 对可回写视频只 setEnabled(True)，
+    # 从不复位 checked），且运行前没有任何地方说明这一次输出音频还是视频。
+    import tempfile  # noqa: PLC0415
+
+    sys.path.insert(0, os.path.join(ROOT, "tests"))
+    from media_fixtures import make_video, tone  # noqa: PLC0415
+
+    tmpdir = tempfile.mkdtemp(prefix="ae_ui_mode_")
+    vid = make_video(os.path.join(tmpdir, "mode.mp4"), [tone(300, 1.0)])
+    win._import_file(vid)
+    ok = wait_until(app, lambda: win._info is not None and win._info.path == vid,
+                    timeout_s=90, label="视频分析")
+    check("视频导入并探测为视频", ok and win._info.is_video,
+          f"{ok} / {getattr(win._info, 'kind', '?')}")
+    check("导入视频后「输出视频」可用但**未勾选**",
+          win.chk_video_out.isEnabled() and not win.chk_video_out.isChecked(),
+          f"enabled={win.chk_video_out.isEnabled()} checked={win.chk_video_out.isChecked()}")
+    check("运行前提示为「音频（.wav）」",
+          "音频" in win.lbl_out_mode.text() and ".wav" in win.lbl_out_mode.text(),
+          win.lbl_out_mode.text())
+    o_a = win._collect_options(vid)
+    check("未勾选时 options: video_out=False 且 ext=.wav",
+          o_a.video_out is False and o_a.output_ext == ".wav",
+          f"{o_a.video_out} / {o_a.output_ext}")
+
+    win.chk_video_out.setChecked(True)
+    app.processEvents()
+    check("勾选后提示为「写回视频（.mp4）」",
+          "写回视频" in win.lbl_out_mode.text() and ".mp4" in win.lbl_out_mode.text(),
+          win.lbl_out_mode.text())
+    o_b = win._collect_options(vid)
+    check("勾选后 options: video_out=True 且扩名取源容器 .mp4",
+          o_b.video_out is True and o_b.output_ext == ".mp4",
+          f"{o_b.video_out} / {o_b.output_ext}")
+    plan = win._describe_output_plan(vid, o_b)
+    check("运行前日志已给出预测落点（含 .mp4）", ".mp4" in plan and "写回视频" in plan, plan)
+
+    # 根因回归：换文件必须回到「输出音频」，绝不继承
+    vid2 = make_video(os.path.join(tmpdir, "mode2.mp4"), [tone(220, 1.0)])
+    win._import_file(vid2)
+    ok = wait_until(app, lambda: win._info is not None and win._info.path == vid2,
+                    timeout_s=90, label="第二个视频分析")
+    check("换文件后「输出视频」回到未勾选（不继承上一个文件）",
+          ok and not win.chk_video_out.isChecked(),
+          f"ok={ok} checked={win.chk_video_out.isChecked()}")
+    check("换文件后 options 回到音频模式",
+          win._collect_options(vid2).video_out is False)
+    check("换文件后提示回到「音频」", "音频" in win.lbl_out_mode.text(), win.lbl_out_mode.text())
+
+    # 音频输入：禁用 + 未勾选
+    win._import_file(SAMPLE)
+    ok = wait_until(app, lambda: win._info is not None and win._info.path == SAMPLE,
+                    timeout_s=60, label="音频重新导入")
+    check("音频输入时「输出视频」禁用且未勾选",
+          ok and not win.chk_video_out.isEnabled() and not win.chk_video_out.isChecked(),
+          f"ok={ok} enabled={win.chk_video_out.isEnabled()}")
+
+    # 批处理：每份 options 按**该文件自己**的容器判定，而不是"当前正在看的文件"
+    win.chk_video_out.setChecked(True)      # 编程置位：音频输入下控件是禁用的，但语义要能测
+    app.processEvents()
+    o_mix_video = win._collect_options(vid)
+    o_mix_audio = win._collect_options(SAMPLE)
+    check("批处理（混合批次）：视频→写回、音频→音频",
+          o_mix_video.video_out is True and o_mix_video.output_ext == ".mp4"
+          and o_mix_audio.video_out is False and o_mix_audio.output_ext == ".wav",
+          f"{o_mix_video.output_ext} / {o_mix_audio.output_ext}")
+    from core.worker import BatchJob  # noqa: PLC0415
+
+    win.txt_log.clear()
+    win._log_batch_output_plan(
+        [BatchJob(index=0, media_path=vid, options=o_mix_video),
+         BatchJob(index=1, media_path=SAMPLE, options=o_mix_audio)],
+        want_video=True,
+    )
+    text = win.txt_log.toPlainText()
+    check("预检日志逐文件写明模式（视频=写回视频）", "写回视频（.mp4）" in text, text[-200:])
+    check("预检日志写明音频文件为何不写回", "写不回去" in text, text[-200:])
+    check("预检日志给出计数汇总", "1 个写回视频 / 1 个输出音频" in text, text[-200:])
+    win.chk_video_out.setChecked(False)
+    app.processEvents()
+
+    print("\n10. 竞态与一致性（2026-10-01 审计新增）")
+    from core import engines, outputs, pipeline  # noqa: PLC0415
+
+    # 10a 迟到的分析结果必须被丢弃（代次校验）：旧 worker 可能已经把 analyzed 发出来了
+    class _StaleInfo:
+        """哨兵：只要它出现在 win._info 上，就说明过期结果被采纳了。"""
+
+        path = "STALE"
+        kind = "audio"
+        is_video = False
+
+    stale = _StaleInfo()
+    before_info = win._info
+    win._import_file(SAMPLE)                       # 让代次前进一步
+    win._on_analyzed(0, stale, None, None, None)   # 代次 0 = 过期
+    app.processEvents()
+    check("过期分析结果被丢弃（_info 没有被哨兵覆盖）", win._info is not stale,
+          f"_info 变成了哨兵：{win._info is stale}")
+    check("未过期以外的状态也未被改动", win._info is before_info or win._info is None,
+          f"{win._info is before_info}")
+    check("日志里写明了忽略过期结果", "过期的分析结果" in win.txt_log.toPlainText())
+
+    # 10b 处理中「批量处理」必须一起禁用（旧版只关「开始处理」→ 两个任务能同时跑）
+    ok = wait_until(app, lambda: not win._analyzing, timeout_s=90, label="重新分析完成")
+    check("分析完成", ok)
+    from core.worker import PipelineWorker  # noqa: PLC0415
+
+    check("分析期间/就绪后按钮状态自洽",
+          (not win._analyzing) or (not win.btn_batch.isEnabled()),
+          f"analyzing={win._analyzing} batch={win.btn_batch.isEnabled()}")
+    win._start_process()
+    app.processEvents()
+    check("单文件处理中「批量处理」也被禁用", not win.btn_batch.isEnabled())
+    check("单文件处理中「取消」可用", win.btn_cancel.isEnabled())
+    win._cancel_process()
+    wait_until(app, lambda: not (win._pipeline_worker and win._pipeline_worker.isRunning()),
+               timeout_s=30, label="取消完成")
+    app.processEvents()
+
+    # 10c 预测的文件名必须与实际写出的一致（指纹里的 stream_index 曾传 None → 永远预测错）
+    win._import_file(SAMPLE)
+    ok = wait_until(app, lambda: win._info is not None and not win._analyzing,
+                    timeout_s=90, label="示例音频分析")
+    check("示例音频已就绪", ok and win._media_path == SAMPLE, str(win._media_path))
+    opts = win._collect_options(SAMPLE)
+    plan = win._describe_output_plan(SAMPLE, opts)
+    out_dir, _fb = outputs.output_dir_for(SAMPLE, win.project_root)
+    eng_kind = engines.engine_kind(win.catalog.engine(opts.engine_id))
+    expected, _fp = outputs.expected_path(SAMPLE, opts, out_dir, win._stream_index, eng_kind)
+    check("预测落点与 expected_path 完全一致",
+          os.path.basename(expected) in plan, f"{os.path.basename(expected)} vs {plan}")
+    res = pipeline.run(SAMPLE, win.catalog, opts)
+    check("实际写出的文件名与预测一致",
+          os.path.basename(res.output_path or "") == os.path.basename(expected),
+          f"{os.path.basename(res.output_path or '')} vs {os.path.basename(expected)}")
 
     return _finish(app, win)
 

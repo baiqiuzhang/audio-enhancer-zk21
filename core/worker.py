@@ -21,7 +21,6 @@ from . import dsp, media_io, outputs, pipeline
 from .sysinfo import available_memory_bytes, human_gb
 from .engines import Cancelled
 from .modelstore import Catalog, DownloadCancelled, DownloadError, download_files
-
 # 内存守护阈值（本机空闲内存常年只有 3–4 GB，而单个降噪实例约 200–500 MB、
 # 带宽扩展模型 400–700 MB，所以并发数必须按内存收敛，而不是按 CPU 核数）
 MIN_FREE_FOR_ANY = 0.8 * 1024**3      # 低于此值直接拒绝启动批次
@@ -108,6 +107,11 @@ class AnalyzeWorker(QThread):
 
     这里会完整解码一次；处理时会再解码一次。多一次解码换来「处理前就能看到电平与
     待裁剪区间」，对长文件也只是一次几秒的开销，值得。
+
+    `cancel()` 是**协作取消**（2026-10-01 加）：界面在用户切文件时调用它，worker 在解码
+    循环里看到标志就尽快退出。此前界面用的是 `QThread.terminate()`——在线程可能正跑着
+    PyAV/soundfile 的 C 代码时硬杀，PyQt 官方明确反对（死锁/堆损坏风险），而且对 69 分钟
+    素材 `wait(2000)` 必然超时。
     """
 
     progressed = Signal(str)
@@ -118,26 +122,44 @@ class AnalyzeWorker(QThread):
         super().__init__(parent)
         self._path = media_path
         self._stream_index = stream_index
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def is_cancelled(self) -> bool:
+        return self._cancel
 
     def run(self) -> None:
         try:
+            if self._cancel:
+                return
             self.progressed.emit("探测媒体…")
             info = media_io.probe(self._path)
             index = self._stream_index if self._stream_index is not None else info.default_audio_index
             decode_index = index if info.decoder == "pyav" else None
 
             self.progressed.emit("解码并统计电平…")
-            data = media_io.decode(self._path, stream_index=decode_index)
+            data = media_io.decode(self._path, stream_index=decode_index,
+                                   cancel=self.is_cancelled)
+            if self._cancel:
+                return
 
             mono = media_io.to_mono(data.samples)
             stats = dsp.analyze(mono, data.sample_rate)
+            if self._cancel:
+                return
 
             self.progressed.emit("检测静音区间…")
             span = dsp.detect_active_span(mono, data.sample_rate)
+        except Cancelled:
+            return                      # 用户切了文件：静默退出，不要报"失败"
         except Exception as exc:  # noqa: BLE001
-            self.failed.emit(f"{type(exc).__name__}: {exc}")
+            if not self._cancel:
+                self.failed.emit(f"{type(exc).__name__}: {exc}")
         else:
-            self.analyzed.emit(info, data, stats, span)
+            if not self._cancel:
+                self.analyzed.emit(info, data, stats, span)
 
 
 @dataclass

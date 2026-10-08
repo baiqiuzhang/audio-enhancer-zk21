@@ -26,6 +26,7 @@ import numpy as np
 
 from .modelstore import Catalog
 from . import cuda_env, sysinfo
+from .errors import Cancelled
 
 # 每线程一套模型实例（ORT 会话），与 denoise 引擎同样的策略
 _local = threading.local()
@@ -189,8 +190,22 @@ def balance_gains(y: np.ndarray, out_rate: int, x_ref: np.ndarray, ref_rate: int
     p_in = _band_power(x_ref, ref_rate, lo, min(hi, cutoff_hz))
     p_low = _band_power(y, out_rate, lo, min(hi, cutoff_hz))
     p_hf = _band_power(y, out_rate, cutoff_hz, out_rate / 2.0)
-    if p_in <= 0 or p_low <= 0 or p_hf <= 0:
-        return 1.0, 1.0
+    # 早先这里是 `if p_in <= 0 or p_low <= 0 or p_hf <= 0: return 1.0, 1.0`
+    # ——而 `apply_balance` 见 (1,1) 会**原样交付模型的原始输出**。这条路径上模型的
+    # 高频可能比通带高出几十 dB（本文件顶部实测：novasr +24.2 / hifiganbwe +29.4 /
+    # lavasr +89.1 dB），把它未经平衡直接交给用户正是"只剩高频/嗡嗡声"那一类事故。
+    # 所以：**平衡做不了就明确拒绝**（与本项目对去混响、对不支持容器的取向一致），
+    # 只有"生成频段本身测不到能量"（p_hf==0）才是安全的——那时原始输出在该频段也没东西。
+    if p_in <= 0 or p_low <= 0:
+        raise BweUnavailable(
+            "带宽扩展无法做频段平衡："
+            + ("输入在 20 Hz–8 kHz 内没有可测能量（素材近乎静音或只有直流）"
+               if p_in <= 0 else "模型输出在通带内没有可测能量")
+            + "。此时若原样交付模型输出，其生成频段可能远高于通带（实测最高 +89 dB），"
+              "听感就是一层刺耳高频——已拒绝，而不是交付一份未平衡的结果。"
+        )
+    if p_hf <= 0:
+        return 1.0, 1.0          # 生成频段为空：原始输出在那里也没能量，压不压都一样
     g_low = float(np.sqrt(p_in / p_low))
     # 目标是「生成频段 = 通带 × 10^(hf_target_db/10)」
     target_hf = p_in * (10.0 ** (hf_target_db / 10.0))
@@ -470,7 +485,9 @@ def upscale(
 
     while pos < n:
         if cancel and cancel():
-            raise RuntimeError("已取消")
+            # 与 core/errors.py 的 Cancelled 保持同一类型：抛 RuntimeError 会让
+            # pipeline/worker 的 `except Cancelled` 捕不到，取消被显示成"处理失败"。
+            raise Cancelled("已取消")
         seg = x[pos:min(n, pos + chunk)]
         y, rate = model.upscale(seg, sample_rate)
         y = np.asarray(y, dtype=np.float32).reshape(-1)

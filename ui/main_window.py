@@ -38,7 +38,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from core import media_io, modelstore, outputs, pipeline
+from core import engines, media_io, modelstore, outputs, pipeline
 from core.worker import AnalyzeWorker, BatchJob, BatchProcessor, DownloadWorker, PipelineWorker
 
 from . import theme
@@ -68,6 +68,19 @@ HIGH_PASS_HZ = 80
 MUD_CUT_DB_PRESET = -5.0
 SHELF_DB_PRESET = 6.0
 
+# 「本次输出什么」的前置提示文案。含扩展名是刻意的——那是运行前唯一无歧义的证据。
+OUT_MODE_IDLE = "本次输出：—（尚未导入文件）"
+OUT_MODE_MEMORY = "本次输出：不落盘（只出内存结果，需要时用「导出为…」）"
+
+# 运行日志落盘（见 MainWindow._append_run_log）。超过上限就轮转一份，不删任何数据。
+RUN_LOG_NAME = "run.log"
+RUN_LOG_MAX_BYTES = 2 * 1024 * 1024
+
+# 关闭时仍未结束的后台 QThread 的**保命引用**：运行中的 QThread 一旦被析构，
+# Windows 上直接访问违例（实测 0xC0000005，发生在打印完"全部通过"之后的退出阶段）。
+# 宁可让进程退出时留一个没跑完的线程，也不要崩在退出路径上。
+_ORPHAN_WORKERS: list = []
+
 
 def _fmt_time(seconds: float) -> str:
     seconds = max(0.0, float(seconds))
@@ -91,6 +104,17 @@ class MainWindow(QMainWindow):
         self._result: pipeline.PipelineResult | None = None
 
         self._analyze_worker: AnalyzeWorker | None = None
+        # 所有还活着的分析线程。为什么必须留引用：`cancel()` 是协作式的（见 _import_file），
+        # 被取消的 worker 不会立刻结束；而 QThread 作为 MainWindow 的子对象，一旦线程还在跑
+        # 就进入析构，Windows 上直接**访问违例**（实测：管道运行 smoke_ui 三次，第三次在
+        # 打印完"全部通过"之后以 0xC0000005 结束——那就是退出阶段在析构运行中的 QThread）。
+        # 关窗时按这个列表逐个 cancel + wait。
+        self._analyze_workers: list[AnalyzeWorker] = []
+        # 分析代次：每次 _import_file 递增，槽函数只接受与当前代次一致的结果（见 _is_stale_analysis）
+        self._analyze_seq = 0
+        # 分析进行中：期间禁用「开始处理 / 批量处理」，否则用户能在媒体信息还没回来时开跑，
+        # 而随后到达的分析结果会把刚接好的 A/B 视图重置成"原音 vs 原音"（实测竞态）。
+        self._analyzing = False
         self._pipeline_worker: PipelineWorker | None = None
         self._download_worker: DownloadWorker | None = None
 
@@ -103,6 +127,8 @@ class MainWindow(QMainWindow):
 
         # 当前文件解码后的原音（试听变体时要用它做 A/B 的原音轨）
         self._source_audio: media_io.AudioData | None = None
+        # 上述解码音频的"身份" (绝对路径, 音轨号)：只有完全一致才允许交给流水线复用
+        self._source_audio_key: tuple[str, int] | None = None
         # 当前文件已有的结果（变体），以及它们所在目录
         self._variants: list = []
         self._variant_out_dir: str = ""
@@ -514,6 +540,8 @@ class MainWindow(QMainWindow):
         self.cmb_format = QComboBox()
         for label, ext in media_io.OUTPUT_FORMATS:
             self.cmb_format.addItem(label, ext)
+        # 输出模式的提示里含扩展名，所以换格式也要刷新
+        self.cmb_format.currentIndexChanged.connect(self._refresh_out_mode)
         gp.addWidget(self.cmb_format, r, 1)
         r += 1
 
@@ -523,7 +551,18 @@ class MainWindow(QMainWindow):
         self.chk_video_out = QCheckBox("输出视频（把增强音轨写回原视频）")
         self.chk_video_out.setEnabled(False)
         self.chk_video_out.setToolTip("只有视频输入才能写回视频。")
+        self.chk_video_out.stateChanged.connect(self._refresh_out_mode)
         gp.addWidget(self.chk_video_out, r, 0, 1, 2)
+        r += 1
+
+        # 「本次到底会输出什么」放在这里**前置显示**，而不是等写完才在日志里看到。
+        # 来由：用户报「没勾输出视频，结果还是产出了一个 713 MB 的 mp4」——排查发现
+        # 复选框状态会跨文件粘滞（见 _import_file 的复位），而界面上没有任何地方
+        # 在运行前告诉他这一次是音频还是视频。文案必须含扩展名，那是唯一无歧义的证据。
+        self.lbl_out_mode = QLabel(OUT_MODE_IDLE)
+        self.lbl_out_mode.setObjectName("sectionHint")
+        self.lbl_out_mode.setWordWrap(True)
+        gp.addWidget(self.lbl_out_mode, r, 0, 1, 2)
         r += 1
 
         self.chk_autoexport = QCheckBox("处理完自动写出结果（输入目录 AudioEnhancer_zk21/）")
@@ -532,6 +571,7 @@ class MainWindow(QMainWindow):
             "取消勾选则只在内存里出结果，需要落盘时用工具栏的「导出为…」。"
         )
         self.chk_autoexport.setChecked(True)
+        self.chk_autoexport.stateChanged.connect(self._refresh_out_mode)
         gp.addWidget(self.chk_autoexport, r, 0, 1, 2)
         r += 1
 
@@ -1052,6 +1092,7 @@ class MainWindow(QMainWindow):
         self._stream_index = None
         self._media_path = None
         self._source_audio = None
+        self._source_audio_key = None
         self._audition = None
         self.act_export.setEnabled(False)
         self.lbl_file.setText("尚未导入文件")
@@ -1063,9 +1104,13 @@ class MainWindow(QMainWindow):
         self.cmb_stream.blockSignals(False)
         self.row_stream.setVisible(False)
         self._set_transport_enabled(False)
+        # 分析代次递增：任何在途的（旧文件的）分析结果都会被 _is_stale_analysis 丢弃
+        self._analyze_seq += 1
+        self._analyzing = False
         self.chk_video_out.setChecked(False)
         self.chk_video_out.setEnabled(False)
         self.chk_video_out.setToolTip("只有视频输入才能写回视频。")
+        self._refresh_out_mode()
         self._refresh_variants()
 
     # ------------------------------------------------------------------
@@ -1183,10 +1228,20 @@ class MainWindow(QMainWindow):
             return
         self._import_file(sample)
 
-    def _import_file(self, path: str) -> None:
+    def _import_file(self, path: str, stream_index: int | None = None) -> None:
         if self._pipeline_worker and self._pipeline_worker.isRunning():
-            QMessageBox.information(self, "正在处理", "请等待当前处理完成或取消后再导入。")
+            # 不弹模态框（2026-10-01 修正）：模态框会开一个嵌套事件循环，工作线程的信号
+            # 会在这期间重入槽函数，而且自动化套件会被它挂住。这里只记日志 + 把列表选区
+            # 还原到当前文件，让界面状态与 _media_path 保持一致。
+            self._log(f"[提示] 正在处理，已忽略这次导入：{os.path.basename(path)}"
+                      "（请等处理完成或先取消）")
+            if self._media_path:
+                self._sync_file_row(self._media_path)
             return
+
+        prev_path = self._media_path
+        same_file = (prev_path is not None
+                     and os.path.abspath(path) == os.path.abspath(prev_path))
 
         self.player.stop()
         self.player.clear()
@@ -1194,10 +1249,34 @@ class MainWindow(QMainWindow):
         self._result = None
         self._stats = None
         self._span = None
-        self._stream_index = None
+        # 音轨选择：换文件才复位（默认音轨由分析结果填入）；**同一文件重导入必须保留**
+        # ——否则 `_on_stream_changed` 刚设好的 `_stream_index` 会被这里清掉，
+        # 分析和处理都退回默认音轨，下拉框还会弹回去（实测：多音轨选择等于没接线）。
+        if not same_file:
+            self._stream_index = None
+        elif stream_index is not None:
+            self._stream_index = int(stream_index)
+        # 「输出视频」必须**逐文件**重新决定，绝不能继承上一个文件的状态。
+        #
+        # 这条是有来历的：原实现里 _on_analyzed 对可回写容器的视频只 setEnabled(True)，
+        # **从不复位 checked**（只有音频/不可回写容器才复位）。于是本会话里只要对任何
+        # 一个视频勾过一次，之后每次处理视频都会静默写回视频——用户实测就是这么产出了
+        # 一个 713 MB 的 mp4，而 manifest 里明确记着 video_out=true、chain_label 含
+        # 「写回视频」。该复选框在可滚动左栏底部，运行前又没有任何提示，所以极难察觉。
+        #
+        # 语义定死：换文件（含从"没有文件"变成有文件）就回到"输出音频"；
+        # 同一个文件重导入（例如切音轨）**保留**用户当前选择，避免无谓地丢掉设置。
+        if not same_file:
+            self.chk_video_out.setChecked(False)
+            self.chk_video_out.setEnabled(False)
+            self.chk_video_out.setToolTip("正在探测…只有视频输入才能写回视频。")
         self._media_path = path
+        # 立刻把「本次输出」刷成新文件的模式：探测还没回来时也要先显示"音频"，
+        # 而不是停留在上一个文件的结论上。
+        self._refresh_out_mode()
         self.act_export.setEnabled(False)
         self._source_audio = None
+        self._source_audio_key = None
         self._audition = None
         self._sync_file_row(path)      # 列表选区跟随（来源可能是拖放 / 示例 / 音轨切换）
         self._refresh_variants()       # 立刻显示这个文件已有的结果
@@ -1209,24 +1288,69 @@ class MainWindow(QMainWindow):
         self.waveform.set_trim(None, None)
         self._log(f"导入：{path}")
 
+        # 旧的分析线程**不用 terminate() 强杀**（2026-10-01 修正）：QThread.terminate()
+        # 是在线程可能正持着 GIL/锁跑 C 代码（PyAV/soundfile）时被硬杀的，PyQt 官方明确
+        # 反对，可能留下死锁或堆损坏；而且 wait(2000) 对 69 分钟素材（解码实测 14.61 s）
+        # 必然超时，随后又建一个新 worker，旧线程作为 MainWindow 的子对象还会在关窗时被析构
+        # → "QThread destroyed while running"。这里改成协作取消（worker 内部在解码循环里
+        # 检查）+ **代次校验**：过期结果一律丢弃（见 _on_analyzed/_on_analyze_failed）。
         if self._analyze_worker and self._analyze_worker.isRunning():
-            self._analyze_worker.terminate()
-            self._analyze_worker.wait(2000)
+            self._analyze_worker.cancel()
+        # 顺手清掉已经跑完的引用，避免列表无限增长
+        self._analyze_workers = [w for w in self._analyze_workers if w.isRunning()]
 
-        self._analyze_worker = AnalyzeWorker(path, None, self)
+        self._analyze_seq += 1
+        token = self._analyze_seq
+        self._analyzing = True
+        self._analyze_worker = AnalyzeWorker(path, self._stream_index, self)
+        self._analyze_workers.append(self._analyze_worker)
         self._analyze_worker.progressed.connect(self.lbl_status.setText)
-        self._analyze_worker.analyzed.connect(self._on_analyzed)
-        self._analyze_worker.failed.connect(self._on_analyze_failed)
+        self._analyze_worker.analyzed.connect(
+            lambda i, d, s, sp, t=token: self._on_analyzed(t, i, d, s, sp))
+        self._analyze_worker.failed.connect(
+            lambda msg, t=token: self._on_analyze_failed(t, msg))
+        self._analyze_worker.finished.connect(self._prune_analyze_workers)
         self._analyze_worker.start()
+        self._update_run_enabled()
 
-    def _on_analyze_failed(self, message: str) -> None:
+    def _prune_analyze_workers(self) -> None:
+        """丢弃已结束的分析线程引用（QThread 结束后对象可以安全析构）。"""
+        self._analyze_workers = [w for w in self._analyze_workers if w.isRunning()]
+
+    def _is_stale_analysis(self, token: int, what: str) -> bool:
+        """分析结果是否已过期（用户又切了文件/音轨）。
+
+        竞态是真的：解码 69 分钟素材要 14.61 s，用户完全可能在这期间切到另一个文件；
+        而 QThread 的信号是**排队投递**的——旧 worker 即使已经被请求取消，只要它已经把
+        `analyzed` 发出来了，槽函数照样会被调用。此前 `_on_analyzed` 不校验来源，于是
+        `_info/_stats/_span/_source_audio`、播放器、波形、甚至 `_stream_index` 都会被
+        **旧文件**的数据覆盖，而 `_media_path` 已经是新文件——这正是"状态与当前文件不符"
+        那一类事故的机制。
+        """
+        if token != self._analyze_seq:
+            self._log(f"[提示] 已忽略过期的分析结果（{what}）：当前文件是 "
+                      f"{os.path.basename(self._media_path or '—')}")
+            return True
+        return False
+
+    def _finish_analysis(self, token: int) -> None:
+        if token == self._analyze_seq:
+            self._analyzing = False
+
+    def _on_analyze_failed(self, token: int, message: str) -> None:
+        if self._is_stale_analysis(token, "导入失败"):
+            return
+        self._finish_analysis(token)
         self.lbl_media.setText("无法读取")
         self.lbl_stats.setText("—")
         self._log(f"[错误] {message}")
         QMessageBox.warning(self, "导入失败", message)
         self._update_run_enabled()
 
-    def _on_analyzed(self, info, data, stats, span) -> None:
+    def _on_analyzed(self, token: int, info, data, stats, span) -> None:
+        if self._is_stale_analysis(token, "媒体信息"):
+            return
+        self._finish_analysis(token)
         self._info = info
         self._stats = stats
         self._span = span
@@ -1300,6 +1424,12 @@ class MainWindow(QMainWindow):
 
         # 试听「原音」：处理前也能听
         self._source_audio = data          # 试听变体时要用它当 A/B 的原音轨
+        # 记下这份解码音频的"身份"：处理时若仍是同一个文件同一条音轨，就把它直接交给
+        # 流水线（省掉第二次解码与第二份 1.59 GB，见 PipelineOptions.predecoded）。
+        self._source_audio_key = (
+            os.path.abspath(self._media_path or ""),
+            self._stream_index if self._stream_index is not None else info.default_audio_index,
+        )
         self._audition = None
         self.player.load(data, data)
         self._set_transport_enabled(True)
@@ -1317,10 +1447,11 @@ class MainWindow(QMainWindow):
             return
         if value == self._stream_index:
             return
-        self._stream_index = int(value)
         self._log(f"切换到音轨 {value}，重新读取…")
         path = self._media_path
-        self._import_file(path)
+        # 把选中的音轨**显式传进去**：`_import_file` 对同一文件会保留它，
+        # 而旧实现在自己内部把它清成 None，于是这里刚设的值被丢掉——多音轨选择形同虚设。
+        self._import_file(path, stream_index=int(value))
 
     # ==================================================================
     # 处理
@@ -1331,33 +1462,93 @@ class MainWindow(QMainWindow):
             self._pipeline_worker and self._pipeline_worker.isRunning()
         )
         ready = spec is not None and modelstore.engine_ready(spec, self.catalog)
-        can = self._media_path is not None and ready and not busy
+        # 分析未结束时也算"忙"：否则用户能在媒体信息还没回来时点开始处理，
+        # 随后到达的分析结果会把刚接好的 A/B 视图重置（见 __init__ 里 _analyzing 的说明）。
+        can = self._media_path is not None and ready and not busy and not self._analyzing
         self.btn_run.setEnabled(can)
 
         # 批量处理的对象：列表里勾选了就用勾选的那些，否则用整张列表
         targets = self._selected_files() or list(self._files)
-        self.btn_batch.setEnabled(bool(targets) and ready and not busy)
+        self.btn_batch.setEnabled(bool(targets) and ready and not busy and not self._analyzing)
         self.btn_batch.setText(
             f"批量处理 {len(targets)} 个文件" if targets else "批量处理选中文件"
         )
+        # 「取消」的可用性由这里统一决定：单文件处理与批处理都走它。
+        # 早先 _start_process 只关 btn_run、不关 btn_batch，于是单文件处理期间还能再点批量，
+        # 而 _cancel_process 又优先取消批处理并把按钮置灰、不恢复——单文件任务就再也取消不了。
+        self.btn_cancel.setEnabled(bool(busy))
 
-        if spec is not None and not modelstore.engine_ready(spec, self.catalog) and self._media_path:
+        if self._analyzing:
+            self.lbl_status.setText("正在读取媒体信息…")
+        elif spec is not None and not modelstore.engine_ready(spec, self.catalog) and self._media_path:
             self.lbl_status.setText(f"模型「{spec.name}」尚未下载")
         elif can:
             self.lbl_status.setText("就绪")
+        self._refresh_out_mode()      # 兜底：任何入口都不会留下过期的「本次输出」提示
 
-    def _collect_options(self) -> pipeline.PipelineOptions:
-        spec = self._selected_engine()
+    def _resolve_output_mode(self, path: str | None = None) -> tuple[bool, str, str | None]:
+        """决定这一次要写什么：返回 (是否写回视频, 扩展名, 降级原因)。
+
+        **模式按传入的那个文件判定**，而不是按"当前正在看的文件"。原实现读
+        `self._media_path`，于是批处理里所有 job 都拿到当前文件的模式：勾了视频输出后，
+        批处理中的音频文件必然报「勾了「输出视频」但输入不是视频文件」而失败。
+        `path=None` 时退回当前文件（单文件链路的行为不变）。
+
+        降级原因非空 = 「勾了输出视频，但这个文件写不回去」，由调用方**明确告知**，
+        不静默改写语义（pipeline.check_video_out_ok 仍是硬兜底）。
+        """
+        target = path if path is not None else self._media_path
         ext = self.cmb_format.currentData() or ".wav"
-        # 写回视频时输出扩展名取**源容器**（不做容器转换，避免整个
-        # 「容器 × 编解码」矩阵的不确定性）；不支持的容器在 _on_analyzed 里已禁用。
-        video_out = bool(self.chk_video_out.isChecked())
-        if video_out and self._media_path:
-            src_ext = os.path.splitext(self._media_path)[1].lower()
-            if media_io.remux_supported_ext(src_ext):
-                ext = src_ext
-            else:
-                video_out = False
+        if not self.chk_video_out.isChecked():
+            return False, ext, None
+        if not target:
+            return False, ext, "没有目标文件"
+        src_ext = os.path.splitext(target)[1].lower()
+        if media_io.remux_supported_ext(src_ext):
+            # 写回视频时输出扩展名取**源容器**（不做容器转换，避免整个
+            # 「容器 × 编解码」矩阵的不确定性）；不支持的容器在 _on_analyzed 里已禁用。
+            return True, src_ext, None
+        return False, ext, (
+            media_io.remux_refusal_reason(src_ext) or f"不认识的目标容器 {src_ext}"
+        )
+
+    def _refresh_out_mode(self, *_args) -> None:
+        """把「本次输出：…」刷成当前状态。
+
+        任何影响输出模式的东西变化都要走到这里（复选框、输出格式、自动写出、
+        导入文件、清空）。文案在**运行之前**就给出扩展名——用户报的
+        「没勾输出视频却产出了 mp4」正是因为这个信息此前只在写完之后才出现。
+        """
+        label = getattr(self, "lbl_out_mode", None)
+        if label is None:
+            return
+        if self._media_path is None:
+            label.setText(OUT_MODE_IDLE)
+            return
+        if not self.chk_autoexport.isChecked():
+            label.setText(OUT_MODE_MEMORY)
+            return
+        video_out, ext, _why = self._resolve_output_mode(self._media_path)
+        if video_out:
+            label.setText(
+                f"本次输出：写回视频（{ext}，画面原样复制、不重新编码；输入文件不会被改写）"
+            )
+        else:
+            label.setText(f"本次输出：音频（{ext}）")
+
+    def _collect_options(self, path: str | None = None) -> pipeline.PipelineOptions:
+        spec = self._selected_engine()
+        video_out, ext, _why = self._resolve_output_mode(path)
+        # 把导入时已经解码好的音频交给流水线（仅当确实是同一个文件、同一条音轨）。
+        # 单文件链路能省掉一次完整解码与一份整段内存；批处理里只有"当前文件"能命中，
+        # 其余文件照常各自解码（key 校验保证不会串用别的文件的音频）。
+        target = path if path is not None else self._media_path
+        predecoded = None
+        if (target and self._source_audio is not None
+                and self._source_audio_key is not None
+                and self._source_audio_key[0] == os.path.abspath(target)
+                and self._source_audio_key[1] == self._stream_index):
+            predecoded = self._source_audio
         # 刻意**不设** output_path：那是"导出语义"，会让流水线走显式路径分支，从而绕开
         # 命名规范、参数指纹与同参数复用（见 core/pipeline.py 里 output_path is None 那段）。
         # 自动写出改由 write_output 控制，落点是输入文件所在目录的 AudioEnhancer_zk21/ 子文件夹。
@@ -1382,7 +1573,36 @@ class MainWindow(QMainWindow):
             shelf_db=float(self.spn_shelf_db.value()),
             mud_cut_db=float(self.spn_mudcut.value()),
             compressor_enabled=self.chk_comp.isChecked(),
+            predecoded=predecoded,
         )
+
+    def _describe_output_plan(self, path: str, options: pipeline.PipelineOptions) -> str:
+        """一行「这次会写出什么文件」——在长跑开始**之前**打出来。
+
+        含扩展名与文件名，所以"到底出音频还是视频"不需要等写盘才知道。用户那次
+        误产出 713 MB mp4 的运行时，日志里只有「开始处理：DeepFilterNet3」，
+        输出模式是在 12 分钟之后才出现的。
+
+        **`stream_index` 必须与 pipeline 实际用的一致**：指纹里含 `input.stream_index`
+        （实测 `fp(None)≠fp(0)≠fp(1)`），早先这里传 None 而 pipeline 用 `resolved`，
+        于是预测出来的文件名**永远与实际写出的不同**，"已存在，将直接复用"那条分支
+        也就永远走不到。单文件链路传 `self._stream_index`；批处理不预测文件名。
+        """
+        if not options.write_output:
+            return "输出模式：仅内存（未勾选「自动写出结果」，不落盘）"
+        mode = "写回视频" if options.video_out else "音频"
+        try:
+            out_dir, _fallback = outputs.output_dir_for(path, self.project_root)
+            eng_kind = engines.engine_kind(self.catalog.engine(options.engine_id))
+            expected, _fp = outputs.expected_path(
+                path, options, out_dir, self._stream_index, eng_kind
+            )
+            name = os.path.basename(expected)
+            if os.path.isfile(expected):
+                return f"输出模式：{mode} → {name}（已存在，将直接复用、不重算）"
+            return f"输出模式：{mode} → {name}"
+        except Exception as exc:      # noqa: BLE001 — 只是提示，失败不该拦住处理
+            return f"输出模式：{mode}（预测文件名失败：{type(exc).__name__}: {exc}）"
 
     def _start_process(self) -> None:
         if not self._media_path:
@@ -1391,13 +1611,12 @@ class MainWindow(QMainWindow):
         if spec is None:
             return
         self.player.pause()
-        options = self._collect_options()
+        options = self._collect_options(self._media_path)
 
-        self.btn_run.setEnabled(False)
-        self.btn_cancel.setEnabled(True)
         self.progress.setValue(0)
         self._log("—" * 30)
         self._log(f"开始处理：{spec.name}")
+        self._log(self._describe_output_plan(self._media_path, options))
 
         self._pipeline_worker = PipelineWorker(
             self._media_path, self.catalog, options, self._stream_index, self
@@ -1407,6 +1626,8 @@ class MainWindow(QMainWindow):
         self._pipeline_worker.failed.connect(self._on_failed)
         self._pipeline_worker.cancelled.connect(self._on_cancelled)
         self._pipeline_worker.start()
+        # 按钮状态统一由 _update_run_enabled 决定（它会把「批量处理」也关掉并点亮「取消」）
+        self._update_run_enabled()
 
     def _start_batch(self) -> None:
         """批量处理列表里勾选的文件（没勾选就是整张列表）。"""
@@ -1420,8 +1641,10 @@ class MainWindow(QMainWindow):
 
         # stream_index 留空：批处理里各文件的音轨布局未必相同，交给流水线各自解析默认音轨。
         # 每个 job 单独取一份 options，避免同一个 dataclass 被多个 worker 线程共享。
+        # **options 必须按 job 自己的文件判定输出模式**（见 _resolve_output_mode）：
+        # 否则勾了「输出视频」之后，批次里的音频文件会必然报错失败。
         jobs = [
-            BatchJob(index=i, media_path=p, options=self._collect_options(), stream_index=None)
+            BatchJob(index=i, media_path=p, options=self._collect_options(p), stream_index=None)
             for i, p in enumerate(paths)
         ]
         self._batch_paths = list(paths)
@@ -1429,6 +1652,9 @@ class MainWindow(QMainWindow):
         self._log("—" * 30)
         self._log(f"开始批量处理：{len(paths)} 个文件 · 引擎 {spec.name}")
         self._log("  输出目录：各输入文件所在目录下的 AudioEnhancer_zk21/")
+
+        # 逐文件把输出模式摆到明面上（不勾视频输出时只报一行汇总，避免日志噪音）
+        self._log_batch_output_plan(jobs, bool(self.chk_video_out.isChecked()))
 
         self.btn_run.setEnabled(False)
         self.btn_batch.setEnabled(False)
@@ -1445,6 +1671,33 @@ class MainWindow(QMainWindow):
         # start() 在内存不足时会**同步**发出 finished_all（一个作业都不跑），所以信号必须
         # 先接好；_on_batch_finished 因此只做状态复位，不假设批次真的跑起来了。
         self._batch.start()
+
+    def _log_batch_output_plan(self, jobs: list, want_video: bool) -> None:
+        """批处理的输出模式预检。
+
+        勾了视频输出时**逐文件**列出模式：批次里可能混着音频文件或不可回写的容器，
+        原实现把"当前文件"的模式套给整批，于是那些文件必然以
+        「勾了「输出视频」但输入不是视频文件」失败。这里改成显式告知每一条，
+        语义没有偷偷改变（流水线的硬拒绝仍是兜底），只是不再让人到失败时才知道。
+        """
+        if not want_video:
+            return
+        video_files = [j for j in jobs if j.options.video_out]
+        audio_files = [j for j in jobs if not j.options.video_out]
+        for job in jobs:
+            name = os.path.basename(job.media_path)
+            if job.options.video_out:
+                self._log(f"  · {name} → 写回视频（{job.options.output_ext}）")
+            else:
+                _v, _e, why = self._resolve_output_mode(job.media_path)
+                self._log(
+                    f"  · {name} → 音频（{job.options.output_ext}）"
+                    + (f"　[勾了「输出视频」，但该文件写不回去：{why}]" if why else "")
+                )
+        self._log(
+            f"  输出模式汇总：{len(video_files)} 个写回视频 / "
+            f"{len(audio_files)} 个输出音频 / 共 {len(jobs)} 个"
+        )
 
     def _on_batch_progress(self, index: int, frac: float, _message: str) -> None:
         self.progress.setValue(int(max(0.0, min(1.0, float(frac))) * 1000))
@@ -1507,15 +1760,21 @@ class MainWindow(QMainWindow):
         self._update_run_enabled()
 
     def _cancel_process(self) -> None:
+        # 两个都取消（正常情况下它们互斥，但用户完全可能在单文件处理期间又启动了批处理
+        # ——旧版就是这样把单文件任务"取消不掉"的：优先取消批处理、置灰按钮、单文件还在跑）。
+        cancelled_any = False
         if self._batch is not None:
             self._log("正在取消批处理…（已在处理的文件会尽快收尾）")
             self._batch.cancel()
-            self.btn_cancel.setEnabled(False)
-            return
+            cancelled_any = True
         if self._pipeline_worker and self._pipeline_worker.isRunning():
-            self._log("正在取消…")
+            self._log("正在取消…（推理子进程会在数秒内被终止）")
             self._pipeline_worker.cancel()
-            self.btn_cancel.setEnabled(False)
+            cancelled_any = True
+        if cancelled_any:
+            # 不在这里置灰：置灰后如果任务还没真正结束，用户既不能重复取消也看不到状态。
+            # 由 _on_cancelled/_on_batch_finished → _update_run_enabled 统一收尾。
+            self.lbl_status.setText("正在取消…")
 
     def _on_progress(self, frac: float, message: str) -> None:
         self.progress.setValue(int(max(0.0, min(1.0, frac)) * 1000))
@@ -1538,7 +1797,6 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "处理失败", message)
 
     def _on_processed(self, result: pipeline.PipelineResult) -> None:
-        self.btn_cancel.setEnabled(False)
         self.progress.setValue(1000)
         self.lbl_status.setText("处理完成")
 
@@ -1553,6 +1811,17 @@ class MainWindow(QMainWindow):
             self._log(f"  分阶段：{pipeline.stage_summary(result.stage_times)}")
         for dev in result.device_notes:
             self._log(f"  {dev}")
+
+        # 结果属于**哪个文件**要校验：用户完全可能在处理期间把当前文件移除/清空/切走，
+        # 而信号是排队投递的。旧版会把已移除文件的结果接进播放器与波形、并把「导出」重新点亮，
+        # 界面状态就与"当前文件"脱节了。产物与变体照旧保留在磁盘上。
+        if (not self._media_path
+                or os.path.abspath(result.source_path) != os.path.abspath(self._media_path)):
+            self._log("[提示] 结果属于已切走的文件，只刷新变体列表、不改动当前视图："
+                      f"{os.path.basename(result.source_path)}")
+            self._refresh_variants()
+            self._update_run_enabled()
+            return
 
         self._apply_result_to_view(result)
         self._refresh_variants()      # 刚写出的结果应立刻出现在变体列表里
@@ -1680,6 +1949,26 @@ class MainWindow(QMainWindow):
     # ==================================================================
     def _log(self, message: str) -> None:
         self.txt_log.appendPlainText(f"[{time.strftime('%H:%M:%S')}] {message}")
+        self._append_run_log(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+
+    def _append_run_log(self, line: str) -> None:
+        """把日志追加到 `<项目>/out/run.log`（超过 2 MB 轮转一份）。
+
+        来由：用 pythonw 启动时没有控制台，而 `txt_log` 只活在内存里、关窗即失。
+        用户报"处理很慢"的那一次（4139 s 素材、734.72 s）事后只剩一个 mp4 与 manifest，
+        分阶段耗时与设备说明全部丢失，瓶颈只能靠外推猜。落盘后下一次可以直接查。
+
+        只做追加，绝不删除用户数据；任何失败都静默忽略（日志不该影响处理）。
+        """
+        try:
+            path = os.path.join(self.project_root, "out", RUN_LOG_NAME)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if os.path.isfile(path) and os.path.getsize(path) > RUN_LOG_MAX_BYTES:
+                os.replace(path, path + ".1")
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except OSError:
+            pass
 
     def closeEvent(self, event):  # noqa: N802
         self.player.shutdown()
@@ -1688,9 +1977,23 @@ class MainWindow(QMainWindow):
             # 发完取消信号就放手（daemon 线程不会阻塞进程退出）
             self._batch.cancel()
             self._batch = None
-        for worker in (self._analyze_worker, self._pipeline_worker, self._download_worker):
-            if worker is not None and worker.isRunning():
-                if hasattr(worker, "cancel"):
-                    worker.cancel()
-                worker.wait(3000)
+        # **所有**在跑的分析线程都要一起收：它们被主线丢弃过（换文件时只 cancel 不 wait），
+        # 而"运行中的 QThread 在自己的父对象被析构时"在 Windows 上是直接访问违例。
+        # 取消现在是协作式的且很灵敏（解码循环每 16 帧查一次标志），所以 5 s 足够。
+        workers = list(self._analyze_workers)
+        for worker in (self._pipeline_worker, self._download_worker):
+            if worker is not None:
+                workers.append(worker)
+        for worker in workers:
+            try:
+                if worker.isRunning():
+                    if hasattr(worker, "cancel"):
+                        worker.cancel()
+                    if not worker.wait(5000):
+                        _ORPHAN_WORKERS.append(worker)   # 交给进程退出，绝不析构运行中的线程
+                        self._log("[提示] 有关闭时仍未结束的后台线程，已交由进程退出处理"
+                                  "（不会被析构，避免访问违例）。")
+            except Exception:                            # noqa: BLE001 — 收尾阶段不再抛
+                pass
+        self._analyze_workers = []
         super().closeEvent(event)

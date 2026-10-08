@@ -5,6 +5,10 @@
     .venv\\Scripts\\python.exe tools\\hf_artifact_probe.py --engine lavasr
     .venv\\Scripts\\python.exe tools\\hf_artifact_probe.py --engine hifiganbwe
 
+默认素材取环境变量 HF_PROBE_MEDIA，或 ~\\Desktop\\sample.mp4；用 --media 覆盖：
+
+    .venv\\Scripts\\python.exe tools\\hf_artifact_probe.py --engine novasr --media "D:\\clips\\clip.mp4"
+
 回答两个问题，都用**绝对电平**（dBFS），因为"高出局部中位数 N dB"不等于听得见：
 
 1. 生成频段里有没有**离散窄带线**（啸叫/嗡声），各自多响；
@@ -27,7 +31,11 @@ os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import bwe, media_io, modelstore  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MEDIA = r"C:\Users\10424\Desktop\bandicam 2026-09-21 13-54-07-025.mp4"
+# 默认素材：用 --media 指定，或设环境变量 HF_PROBE_MEDIA 指向本地音视频文件。
+MEDIA = os.environ.get(
+    "HF_PROBE_MEDIA",
+    os.path.join(os.path.expanduser("~"), "Desktop", "sample.mp4"),
+)
 START_S, DUR_S = 300.0, 20.0
 NFFT = 8192
 

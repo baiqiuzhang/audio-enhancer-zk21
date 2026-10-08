@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 import traceback
 
@@ -96,7 +97,59 @@ def _report_fatal(title: str, message: str) -> None:
         pass
 
 
+_FAULT_LOG_PATH = os.path.join(ROOT, "out", "faulthandler.log")
+_fault_fh = None       # 必须持有引用：文件对象被 GC 后 faulthandler 就写不进去了
+
+
+def install_crash_handlers() -> None:
+    """把"界面槽函数里的异常"与硬崩溃都变成可诊断的记录。
+
+    **为什么必须装**（2026-10-01 审计，子代理实测）：PyQt5 里未被捕获的异常
+    （例如某个槽函数里的一次下标越界）不是只打印堆栈——它会走到 abort，进程以
+    `0xC0000409` 结束；而发行方式是 pythonw（没有控制台），于是用户看到的是
+    "程序突然消失"，`out/startup_error.log` 里什么都没多一行，问题**无法事后诊断**。
+    全仓库此前没有任何 `sys.excepthook` / `threading.excepthook` / `faulthandler`。
+
+    这里装三个钩子，都只负责记录（不改变进程退出与否的语义）：
+
+    - `sys.excepthook`：主线程（含所有 Qt 槽）未捕获异常；
+    - `threading.excepthook`：工作线程（批处理、引擎、下载）未捕获异常；
+    - `faulthandler`：段错误之类的 C 级崩溃，写到 `out/faulthandler.log`。
+    """
+    global _fault_fh
+
+    def _hook(exc_type, exc_value, exc_tb) -> None:
+        try:
+            import traceback as _tb
+
+            text = "".join(_tb.format_exception(exc_type, exc_value, exc_tb))
+        except Exception:                             # noqa: BLE001
+            text = f"{exc_type}: {exc_value}"
+        _report_fatal(f"未捕获异常（{getattr(exc_type, '__name__', exc_type)}）", text)
+
+    sys.excepthook = _hook
+
+    def _thread_hook(args) -> None:
+        _hook(args.exc_type, args.exc_value, args.exc_traceback)
+
+    try:
+        threading.excepthook = _thread_hook
+    except Exception:                                 # noqa: BLE001 — 老解释器没有这个钩子
+        pass
+
+    try:
+        import faulthandler
+
+        os.makedirs(os.path.dirname(_FAULT_LOG_PATH), exist_ok=True)
+        if _fault_fh is None:
+            _fault_fh = open(_FAULT_LOG_PATH, "a", encoding="utf-8")   # noqa: SIM115
+        faulthandler.enable(file=_fault_fh, all_threads=True)
+    except Exception:                                 # noqa: BLE001 — 记录能力缺失不该拦住启动
+        pass
+
+
 def main() -> int:
+    install_crash_handlers()
     missing = _check_dependencies()
     if missing:
         lines = [

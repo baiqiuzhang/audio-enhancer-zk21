@@ -21,6 +21,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .errors import Cancelled
+
 MODELS_JSON = "models.json"
 
 _UA = (
@@ -37,8 +39,17 @@ class DownloadError(RuntimeError):
     """所有来源都失败。"""
 
 
-class DownloadCancelled(RuntimeError):
-    """调用方请求取消。"""
+class DownloadCorrupt(DownloadError):
+    """下载完成但**校验不通过**（大小/sha256 不符）。
+
+    与网络/IO 失败分开是为了决定"残片留不留"：坏残片必须丢弃（否则会拿它去续传，
+    拼出一个永远修不好的文件），而网络中断留下的残片要**保留**——`_fetch` 会用
+    `Range: bytes=<已有长度>-` 从断点续传，这正是本机这种时通时断网络下最值钱的一条。
+    """
+
+
+class DownloadCancelled(Cancelled):
+    """下载被取消。继承 `Cancelled`，这样"取消"在所有层都是同一个类型（见 core/errors.py）。"""
 
 
 # ---------------------------------------------------------------------------
@@ -284,11 +295,31 @@ def download_file(
                 errors.append(f"{src.host}: {exc}")
                 if log:
                     log(f"失败：{src.host} → {exc}")
+                keep = False
                 if attempt < attempts_per_source:
-                    _cleanup(part)          # 校验类失败必须丢弃残片，避免坏续传
+                    # **只有校验失败才丢残片**（2026-10-01 修正）：早先这里无条件 _cleanup，
+                    # 于是同源的第二次尝试永远从 0 开始，文档化的"断点续传"实际只在
+                    # 取消/崩溃之后才有效。本机网络对 GitHub 时通时断，一个 200 MB–1.8 GB 的
+                    # 权重下到 90% 掉线就要整段重来——保留残片 + `Range` 续传正是为此存在的。
+                    keep = not isinstance(exc, DownloadCorrupt) and os.path.isfile(part)
+                    if not keep:
+                        _cleanup(part)
+                    if log:
+                        if keep:
+                            log(f"网络中断，**保留残片 {human_size(os.path.getsize(part))}**，"
+                                "下一次尝试从这里续传")
+                        else:
+                            log("校验失败，已丢弃残片（避免拿坏数据继续续传）")
                     time.sleep(1.0)
                 else:
-                    _cleanup(part)
+                    # 最后一次尝试失败：**保留**残片，下一次运行仍可从断点继续；
+                    # 只在它已被判定为坏数据时清掉。
+                    keep = not isinstance(exc, DownloadCorrupt) and os.path.isfile(part)
+                    if not keep:
+                        _cleanup(part)
+                    elif log:
+                        log(f"该来源最后一次尝试仍失败；已保留残片 {human_size(os.path.getsize(part))}"
+                            f"（{part}），下次会从这里续传，可手动删除）")
 
     raise DownloadError(
         f"所有 {len(fs.sources)} 个来源均失败（{os.path.basename(dest)}）：\n  "
@@ -374,11 +405,11 @@ def _verify_or_raise(path: str, src: Source) -> None:
     if src.size is not None:
         actual = os.path.getsize(path)
         if actual != src.size:
-            raise DownloadError(f"大小不符：期望 {src.size:,} B，实得 {actual:,} B")
+            raise DownloadCorrupt(f"大小不符：期望 {src.size:,} B，实得 {actual:,} B")
     if src.sha256:
         actual = sha256_of(path)
         if actual != src.sha256:
-            raise DownloadError(f"sha256 不符：期望 {src.sha256[:12]}…，实得 {actual[:12]}…")
+            raise DownloadCorrupt(f"sha256 不符：期望 {src.sha256[:12]}…，实得 {actual[:12]}…")
 
 
 # ---------------------------------------------------------------------------

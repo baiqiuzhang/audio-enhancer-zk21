@@ -337,6 +337,28 @@ def check_pipeline_end_to_end(tmp: str, cat) -> None:
         check("变体标签标出「写回视频」", "写回视频" in (res.variant_label or ""),
               str(res.variant_label))
 
+    section("4b. 视频输入 + video_out=False → 产出音频（产出里不含视频流）")
+    # 这条此前**完全没被覆盖**：§5 只断言"两种模式的指纹不同"，没有任何一条断言
+    # 证明"不勾选 ⇒ 写出来的确实是音频"。用户报的「没勾输出视频却产出一个 713 MB
+    # 的 mp4」正好落在这个缺口里，所以这里把它钉死。
+    audio_opts = pipeline.PipelineOptions(
+        engine_id="dsp_baseline", output_ext=".wav", video_out=False,
+        write_output=True, highpass_hz=0.0,
+    )
+    ares = pipeline.run(src, cat, audio_opts)
+    check("音频模式产出 .wav",
+          (ares.output_path or "").lower().endswith(".wav"), str(ares.output_path))
+    check("音频模式产出文件存在",
+          bool(ares.output_path) and os.path.isfile(ares.output_path),
+          str(ares.output_path))
+    if ares.output_path and os.path.isfile(ares.output_path):
+        af = stream_facts(ares.output_path)
+        check("产出里没有任何视频流",
+              not any(s["type"] == "video" for s in af), f"{[s['type'] for s in af]}")
+        check("变体标签不含「写回视频」",
+              "写回视频" not in (ares.variant_label or ""), str(ares.variant_label))
+    check("音频模式下源文件仍未被改动（字节+mtime）", snapshot(src) == before)
+
     section("5. 视频模式与音频模式的指纹必须不同")
     a = pipeline.PipelineOptions(engine_id="dsp_baseline", output_ext=".mp4",
                                  video_out=False, write_output=True, highpass_hz=0.0)

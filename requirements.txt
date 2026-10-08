@@ -1,7 +1,7 @@
 # AudioEnhancer_zk21 — 固定版本依赖
 #
 # 安装到项目内独立 venv，不触碰 Anaconda base：
-#   C:\Users\10424\Anaconda3\python.exe -m venv .venv
+#   <Python 3.12 解释器的绝对路径> -m venv .venv      # 例如 C:\Users\<你>\Anaconda3\python.exe
 #   .venv\Scripts\python.exe -m pip install -r requirements.txt
 #
 # 版本均已确认存在 cp312 / win_amd64 wheel。
