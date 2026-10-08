@@ -1,83 +1,99 @@
 # AudioEnhancer_zk21
 
-本机本地运行的语音增强桌面软件。导入音频或视频，挑选神经网络降噪模型，处理，试听处理前后，导出音频。
+**English** | [中文](README.zh-CN.md)
 
-**不联网也能处理**（模型下载完成后）；**不需要系统 ffmpeg**；**不需要 torch**；**默认纯 CPU**——GPU 是可选项，且实测只在带宽扩展上划算（在 GPU 上跑降噪会**慢 6.6 倍**，详见 [GPU / CUDA](#gpu--cuda可选实测结论写在前面)）。
+A speech-enhancement desktop application that runs locally on your own machine. Import audio or video, pick a neural denoising model, process, audition before and after, export audio.
 
----
-
-## 目录
-
-- [快速开始](#快速开始)
-- [桌面快捷方式](#桌面快捷方式)
-- [界面说明](#界面说明)
-- [支持的输入格式](#支持的输入格式)
-- [模型清单与选择建议](#模型清单与选择建议)
-- [性能与资源实测（先量后改）](#性能与资源实测先量后改)
-- [GPU / CUDA（可选；实测结论写在前面）](#gpu--cuda可选实测结论写在前面)
-- [参数说明](#参数说明)
-- [处理流程](#处理流程)
-- [处理链缺陷修复记录与指纹版本](#处理链缺陷修复记录与指纹版本)
-- [批量处理与变体](#批量处理与变体)
-- [带宽扩展与听感增强](#带宽扩展与听感增强)
-- [真实素材诊断：结论与据此做的标定](#真实素材诊断结论与据此做的标定)
-- [为什么不做「修复吐字不清」的模型](#为什么不做修复吐字不清的模型)
-- [已知限制（请先读这一节）](#已知限制请先读这一节)
-- [自检与测试](#自检与测试)
-- [目录结构](#目录结构)
-- [网络与镜像](#网络与镜像)
-- [回退方式](#回退方式)
-- [许可证](#许可证)
-- [给语音识别（ASR）用途的建议](#给语音识别asr用途的建议)
+**It works without a network connection** (once the models are downloaded); **it needs no system ffmpeg**; **it needs no torch**; **CPU-only by default** — GPU is optional, and measured, it only pays off for bandwidth extension (running denoising on the GPU is **6.6× slower**, see [GPU / CUDA](#gpu--cuda-optional-conclusions-measured-first)).
 
 ---
 
-## 快速开始
+## Contents
+
+- [Quick start](#quick-start)
+- [Desktop shortcut](#desktop-shortcut)
+- [The interface](#the-interface)
+- [Supported input formats](#supported-input-formats)
+- [Model list and selection advice](#model-list-and-selection-advice)
+- [Performance and resource measurements (measure before you change)](#performance-and-resource-measurements-measure-before-you-change)
+- [GPU / CUDA (optional; measured conclusions first)](#gpu--cuda-optional-conclusions-measured-first)
+- [Parameter reference](#parameter-reference)
+- [Processing flow](#processing-flow)
+- [Processing-chain defect history and fingerprint versions](#processing-chain-defect-history-and-fingerprint-versions)
+- [Batch processing and variants](#batch-processing-and-variants)
+- [Bandwidth extension and perceptual enhancement](#bandwidth-extension-and-perceptual-enhancement)
+- [Real-material diagnosis: conclusions and the calibration they drove](#real-material-diagnosis-conclusions-and-the-calibration-they-drove)
+- [Why there is no "fix unclear articulation" model](#why-there-is-no-fix-unclear-articulation-model)
+- [Known limitations (read this section first)](#known-limitations-read-this-section-first)
+- [Self-checks and tests](#self-checks-and-tests)
+- [Directory layout](#directory-layout)
+- [Network and mirrors](#network-and-mirrors)
+- [Rolling back](#rolling-back)
+- [License](#license)
+- [Advice for speech-recognition (ASR) use](#advice-for-speech-recognition-asr-use)
+
+---
+
+## Quick start
 
 ```powershell
-cd "<仓库所在的目录>"
+cd "<the directory the repository lives in>"
 
-# 建独立环境 + 安装依赖 + 自检 + 下载默认模型（约 10 MB）
+# create an isolated environment + install dependencies + self-check + download the default models (about 10 MB)
 powershell -ExecutionPolicy Bypass -File setup_env.ps1
 
-# 启动
+# start
 .\.venv\Scripts\python.exe run.py
 ```
 
-想要一次把全部模型都下好（含 25.7 MB 的 DeepFilterNet3，合计约 80 MB）：
+To download every model in one go (including the 25.7 MB DeepFilterNet3, about 80 MB in total):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File setup_env.ps1 -All
 ```
 
+**Requirements and manual installation.** You need **Python 3.12**: every pinned version in `requirements.txt` is confirmed to have a cp312 / win_amd64 wheel. `setup_env.ps1` looks for an interpreter of 3.10+ in the order `py -3.12` → `py -3` → `python`, and you can also point it at one explicitly with `-Python "C:\path\to\python.exe"`. `setup_env.ps1` does exactly five things: find an interpreter → create `.venv` inside this project directory (skipped if it already exists; delete it manually to rebuild) → upgrade pip and install `requirements.txt` → run the `tests\check_setup.py` self-check → download the default models. It **does not install, upgrade or uninstall anything in the Anaconda base**. The remaining switches are `-All` (download all models), `-SkipModels` (environment only, no model download) and `-SkipChecks` (skip the self-check).
+
+If you would rather not use the script, three manual steps are enough (replace `<absolute path to your Python 3.12 interpreter>` with your own, e.g. `C:\Users\<you>\Anaconda3\python.exe`):
+
+- Create the isolated environment: `<absolute path to your Python 3.12 interpreter> -m venv .venv`
+- Install the dependencies: `.\.venv\Scripts\python.exe -m pip install --upgrade pip`, then `.\.venv\Scripts\python.exe -m pip install -r requirements.txt`
+- Add the pre-release dependency: `.\.venv\Scripts\python.exe -m pip install --pre audiosronnx` (stable 0.0.1 only contains lavasr + novasr, so the other bandwidth-extension engines live in the pre-release and `--pre` is required; it pulls in onnxruntime and scipy, and is only needed if you use bandwidth extension)
+
+Models can also be downloaded on their own: `.\.venv\Scripts\python.exe tests\download_models.py` (the default set = GTCRN + DPDFNet2 + sample audio, about 10 MB), `--all` (everything, about 80 MB, including the 25.7 MB DeepFilterNet3), `--engine dpdfnet8` (one specific engine), `--check` (probe source reachability only, no download). The URLs and their size/sha256 values are recorded in `models.json`, ordered **mirror-first**, with per-source fallback and resumable downloads; you can also select a model in the interface and click "Download selected model". **The app still starts with models missing** — the affected engines simply show "needs download", and you can retry from the interface at any time.
+
+Starting it: `.\.venv\Scripts\python.exe run.py` (with a console, so you can see the output); the desktop shortcut uses `.\.venv\Scripts\pythonw.exe run.py` (no console window). At startup `run.py` imports PyQt5 / numpy / soundfile / soxr / av / sherpa-onnx / sounddevice one by one, and if any of them is missing it prints the list and writes it to `out\startup_error.log` instead of exiting silently.
+
+For large wheels — especially the optional CUDA runtime — **always add the Tsinghua TUNA mirror**: `-i https://pypi.tuna.tsinghua.edu.cn/simple`. Measured on this machine the default index gives only 256 KB/s while TUNA gives 10.8 MB/s; see "[Network and mirrors](#network-and-mirrors)".
+
 ---
 
-## 桌面快捷方式
+## Desktop shortcut
 
-**已经创建好了**，就在桌面上：`AudioEnhancer_zk21`。双击即可启动，不弹控制台窗口。
+**It has already been created**, right on your desktop, named `AudioEnhancer_zk21`. Double-click to start; no console window appears.
 
-如果需要重建（换机器、移动了项目目录、误删了快捷方式）：
+If you need to rebuild it (new machine, moved project directory, accidentally deleted it):
 
 ```powershell
-cd "<仓库所在的目录>"
+cd "<the directory the repository lives in>"
 powershell -ExecutionPolicy Bypass -File make_shortcut.ps1
 
-# 顺带放进开始菜单
+# also put it in the Start menu
 powershell -ExecutionPolicy Bypass -File make_shortcut.ps1 -StartMenu
 ```
 
-快捷方式的构成：
+What the shortcut is made of:
 
-| 项 | 值 |
+| Item | Value |
 | --- | --- |
-| 目标 | `.venv\Scripts\pythonw.exe`（**pythonw** 而非 python，所以没有控制台窗口） |
-| 参数 | `run.py`（项目内的绝对路径） |
-| 工作目录 | 项目根目录 |
-| 图标 | `icon.ico`（本项目内，7 个尺寸 16→256 都单独重绘过） |
+| Target | `.venv\Scripts\pythonw.exe` (**pythonw**, not python, hence no console window) |
+| Arguments | `run.py` (an absolute path inside the project) |
+| Working directory | the project root |
+| Icon | `icon.ico` (inside this project; all 7 sizes from 16 to 256 were redrawn separately) |
 
-**启动失败时不会静默消失**：`run.py` 会先写 `out\startup_error.log`，再弹一个系统消息框显示原因（用 ctypes 直调 `MessageBoxW`，即使 Qt 本身导入失败也能显示）。这只在无控制台启动时触发；用 `python.exe` 从命令行启动时错误直接打印在终端，不会弹框打断你。
+**A failed start does not vanish silently**: `run.py` first writes `out\startup_error.log` and then pops up a system message box showing the reason (it calls `MessageBoxW` directly via ctypes, so it still shows even if Qt itself fails to import). This only happens when started without a console; when you start it from the command line with `python.exe`, the error is printed to the terminal and no dialog interrupts you.
 
-想重新生成图标（改了配色或想换个样式）：改 `make_icon.py` 里的 `ENVELOPE` 与颜色常量，然后
+To regenerate the icon (you changed the palette or want a different style), edit the `ENVELOPE` and colour constants in `make_icon.py`, then
 
 ```powershell
 .\.venv\Scripts\python.exe make_icon.py
@@ -85,949 +101,946 @@ powershell -ExecutionPolicy Bypass -File make_shortcut.ps1 -StartMenu
 
 ---
 
-## 界面说明
+## The interface
 
-左侧（从上到下）：
+Left-hand side (top to bottom):
 
-| 区域 | 内容 |
+| Area | Contents |
 | --- | --- |
-| **媒体信息** | 文件类型（音频 / 视频）、容器、时长、解码器、采样率、声道；视频额外显示画面规格，并**明确标注画面不参与处理**。多音轨容器会出现「音轨」下拉。 |
-| **电平统计** | 峰值 / RMS（dBFS）、静音帧占比、帧电平 p10/p50/p90，以及一句判断（如「电平偏低，建议开启增益归一化」）。 |
-| **待处理文件** | 可多选的清单。`添加…` 支持一次选多个文件，也可以把多个文件一起拖进窗口。**选中哪一行，哪一行就成为「当前文件」**；`批量处理 N 个文件` 对勾选的文件跑批处理。 |
-| **已有结果（变体）** | 当前文件所在输出目录里**已经存在的全部结果**。选中一条即与原音做 A/B 试听。列表来自磁盘，所以**换文件、甚至重启软件之后依然在**。 |
-| **模型** | 11 个引擎的列表，标注 `已就绪 / 需下载 / 无需下载`、速度与体积；下方是所选模型的说明。 |
-| **预设** | 「识别用（保真）」「去闷（保真档）」「试听用（增强）」三档，外加带宽扩展引擎下拉。预设只是帮你把下面那些参数设好，**不绕过**它们——所以设完仍可逐项微调。 |
-| **参数** | 降噪强度、裁剪首尾静音、增益归一化、保持立体声、线程数、输出格式、输出视频、自动写出、高通、听感增强（搁架 EQ / 压缩）、去闷。 |
-| **执行** | 开始处理 / 取消、进度条、状态文字。 |
+| **Media info** | File type (audio / video), container, duration, decoder, sample rate, channels; for video it also shows the picture format and **explicitly states that the picture is not processed**. Containers with several audio tracks get a "Track" dropdown. |
+| **Level statistics** | Peak / RMS (dBFS), share of silent frames, frame-level p10/p50/p90, plus a one-line verdict (e.g. "level is low, consider enabling gain normalisation"). |
+| **Files to process** | A multi-select list. `Add…` accepts several files at once, and you can also drag several files into the window together. **Whichever row you select becomes the "current file"**; `Batch-process N files` runs batch processing over the checked files. |
+| **Existing results (variants)** | **Every result that already exists** in the output directory of the current file. Selecting one gives you an A/B audition against the original. The list comes from disk, so it **survives switching files and even restarting the app**. |
+| **Model** | A list of 11 engines, labelled `ready / needs download / no download needed`, with speed and size; below it, a description of the selected model. |
+| **Preset** | Three presets — "For recognition (faithful)", "De-muffle (faithful)" and "For audition (enhanced)" — plus a bandwidth-extension engine dropdown. A preset only sets the parameters below for you and **does not bypass** them — so you can still fine-tune each one afterwards. |
+| **Parameters** | Denoise strength, trim leading/trailing silence, gain normalisation, keep stereo, thread count, output format, output video, write automatically, high-pass, perceptual enhancement (shelf EQ / compression), de-muffle. |
+| **Run** | Start processing / cancel, progress bar, status text. |
 
-右侧：波形对比视图（上=原音，下=处理后，会被裁掉的静音区间压暗显示）、A/B 试听、日志。
+Right-hand side: the waveform comparison view (top = original, bottom = processed, with the silence regions that will be trimmed shown dimmed), A/B audition, and the log.
 
-试听区快捷键：**空格** 播放/暂停 · **A** 听原音 · **B** 听处理后。波形图上点击可定位。
+Audition shortcuts: **Space** play/pause · **A** hear the original · **B** hear the processed result. Clicking on the waveform seeks.
 
-**在「已有结果」里点一条变体就能直接试听**：切换变体会把播放位置归零（变体是整体重载进播放器的，这是刻意的取舍——见「已知限制」）。
+**Clicking a variant under "Existing results" auditions it directly**: switching variants resets the playback position to zero (a variant is reloaded into the player as a whole, a deliberate trade-off — see "Known limitations").
 
-**「增益匹配」默认开启**：降噪后 RMS 必然下降，若不做补偿，「变安静」会被误听成「变差」。该补偿**只在试听时生效，不写进输出文件**。
+**"Gain matching" is on by default**: RMS necessarily drops after denoising, and without compensation "quieter" gets misheard as "worse". That compensation **applies to audition only and is never written into the output file**.
 
-界面是**深色主题**（`ui/theme.py`：Fusion 样式 + 深色 QPalette + 全局 QSS），配色与应用图标同源——主色绿 `#4fa97a` 对应「处理后」，次色蓝 `#6c8ebf` 对应「原音」。
+The interface uses a **dark theme** (`ui/theme.py`: Fusion style + dark QPalette + global QSS); its colours come from the same source as the app icon — the primary green `#4fa97a` means "processed", the secondary blue `#6c8ebf` means "original".
 
-布局上有一处刻意的设计：**左侧整列放在滚动区里**。窗口变矮时出现滚动条，而不是把子控件压扁——之前「模型说明文字遮挡模型列表」的根因就是竖向空间不足时 Qt 强行压缩子控件。模型说明用的是**固定高度**的只读框（内容多了自己滚动，还可选中复制），而不是会自动换行撑高的 `QLabel`。
+There is one deliberate decision in the layout: **the whole left-hand column sits inside a scroll area**. When the window gets shorter a scrollbar appears instead of the child widgets being squashed — the root cause of the earlier "model description text covers the model list" bug was Qt forcibly compressing child widgets when vertical space ran out. The model description is a **fixed-height** read-only box (its contents scroll on their own and can be selected and copied), not a `QLabel` that grows by wrapping.
 
-后来加进来的「待处理文件」「已有结果（变体）」「预设」三个分组同样挂在这一列，靠同一个滚动区吸收高度。`tests/render_ui.py` 会在 4 种窗口尺寸（最小 1000×560）下逐个检查兄弟控件是否重叠、左栏内容是否被横向裁切、以及模型列表是否被压到下限以下——所以往左栏加控件时不必靠眼睛估，跑它就行。
+The three groups added later — "Files to process", "Existing results (variants)" and "Preset" — also hang off that column and are absorbed by the same scroll area. `tests/render_ui.py` checks, at 4 window sizes (the smallest being 1000×560), whether sibling widgets overlap, whether the left column's content is clipped horizontally, and whether the model list is squeezed below its lower bound — so when you add widgets to the left column you do not have to eyeball it; just run it.
 
-还有一处是"防误操作"的设计：**下拉框 / 数字框 / 滑块的滚轮行为被改了**（`ui/wheel_guard.py`）。Qt 默认只要鼠标停在选择类控件上，滚轮就改它的值，而左侧整列在滚动区里，于是"往下滚页面"经常变成"改了某个参数"，改完还没有任何提示。现在的规则是：
+There is one more "prevent mis-clicks" design decision: **the wheel behaviour of dropdowns / spin boxes / sliders has been changed** (`ui/wheel_guard.py`). By default Qt changes a selector widget's value whenever the mouse merely rests on it, and since the whole left column is inside a scroll area, "scroll the page down" often turned into "changed a parameter", with no feedback afterwards. The rules are now:
 
-| 情况 | 行为 |
+| Situation | Behaviour |
 | --- | --- |
-| 控件**没有焦点**（最常见） | 滚轮交给自己所在的滚动区——页面照常滚动，控件值**不变** |
-| 控件**有焦点**（刚点过它，意图明确） | 保留 Qt 原生行为，可用滚轮微调 |
-| 找不到外层滚动区 | 吞掉滚轮事件而不改值（宁可这一下不滚动，也不要误改参数） |
+| The widget **does not have focus** (the common case) | The wheel goes to the enclosing scroll area — the page scrolls as usual, the widget's value **does not change** |
+| The widget **has focus** (you just clicked it; the intent is explicit) | Qt's native behaviour is kept, so you can nudge the value with the wheel |
+| No enclosing scroll area can be found | The wheel event is swallowed without changing the value (better to lose that one scroll than to change a parameter by accident) |
 
-两个踩过的坑记在这里：**不要把同一个滚轮事件对象再 `sendEvent` 给滚动区视口**——实测那样会让进程在事件派发过程中直接崩溃（空的下拉框上必崩，非空的也崩；摘掉护栏则一切正常，A/B 对照过），所以改成直接驱动滚动条；另外 `tests/smoke_ui.py` 那一节断言会**故意**改动控件值（做反向验证），跑完必须恢复原值——实测踩过：它把「带宽扩展」从"关闭"改成了开启，导致同一套件后面的"长度对齐"断言失败。
+Two pitfalls we stepped into, recorded here: **do not `sendEvent` the same wheel event object to the scroll area's viewport again** — measured, that makes the process crash outright inside event dispatch (it reliably crashes on an empty dropdown and on a non-empty one as well; taking the guard out makes everything normal, verified A/B), so it was changed to drive the scrollbar directly. Also, that assertion section in `tests/smoke_ui.py` **deliberately** changes widget values (as a reverse verification) and must restore the originals when it is done — a measured pitfall: it changed "bandwidth extension" from off to on, which made the "length alignment" assertion later in the same suite fail.
 
-### 界面截图
+### Interface screenshots
 
-跑 `tests/render_ui.py` 会用真实的 windows 平台渲染（不弹窗）并保存三张截图到 `out/`：
+Running `tests/render_ui.py` renders with the real windows platform (without popping up a window) and saves three screenshots into `out/`:
 
-| 文件 | 内容 |
+| File | Contents |
 | --- | --- |
-| `ui_01_ready.png` | 刚导入素材、尚未处理 |
-| `ui_02_small.png` | 最小尺寸（1000×560）下左侧栏的滚动效果 |
-| `ui_03_processed.png` | 处理完成：双波形、A/B、日志 |
+| `ui_01_ready.png` | media just imported, not processed yet |
+| `ui_02_small.png` | the left column scrolling at the minimum size (1000×560) |
+| `ui_03_processed.png` | processing finished: dual waveforms, A/B, log |
 
-这三张图已经随仓库放在 `docs/screenshots/`，下面直接引用：
+Those three images ship with the repository under `docs/screenshots/`, referenced directly below:
 
-**刚导入素材、尚未处理**
+**Media just imported, not processed yet**
 
-![刚导入素材](docs/screenshots/ui_01_ready.png)
+![media just imported](docs/screenshots/ui_01_ready.png)
 
-**最小尺寸 1000×560 下的左侧栏滚动**
+**The left column scrolling at the minimum size of 1000×560**
 
-![最小尺寸下的左侧栏滚动](docs/screenshots/ui_02_small.png)
+![the left column scrolling at the minimum size](docs/screenshots/ui_02_small.png)
 
-**处理完成：双波形、A/B、日志**
+**Processing finished: dual waveforms, A/B, log**
 
-![处理完成](docs/screenshots/ui_03_processed.png)
+![processing finished](docs/screenshots/ui_03_processed.png)
 
 ---
 
-## 支持的输入格式
+## Supported input formats
 
-判定依据是**容器里的流类型**，不只是扩展名。
+What counts is the **stream type inside the container**, not just the extension.
 
-**音频**：`wav` `flac` `mp3` `ogg` `oga` `opus` `m4a` `aac` `wma` `aiff` `aif` `caf` `au` `w64`
+**Audio**: `wav` `flac` `mp3` `ogg` `oga` `opus` `m4a` `aac` `wma` `aiff` `aif` `caf` `au` `w64`
 
-**视频（只取音轨，输出音频）**：`mp4` `mkv` `mov` `avi` `webm` `flv` `ts` `m4v` `wmv` `mpg` `mpeg` `m2ts` `vob` `3gp` `rmvb` `asf`
+**Video (audio track only, audio output)**: `mp4` `mkv` `mov` `avi` `webm` `flv` `ts` `m4v` `wmv` `mpg` `mpeg` `m2ts` `vob` `3gp` `rmvb` `asf`
 
-- `wav/flac/ogg/opus/mp3` 走 soundfile（自带 libsndfile）。
-- `m4a/aac/wma` 与全部视频容器走 PyAV（自带 FFmpeg，**无需系统安装 ffmpeg**）。
-- 多音轨容器（常见于 mkv/ts）可在界面里选音轨，默认取第一条。
-- 无音轨的视频会给出明确报错，不会静默失败。
-- 输出统一为音频：`WAV 24-bit`（默认）/ `FLAC 24-bit` / `MP3`。
+- `wav/flac/ogg/opus/mp3` go through soundfile (which bundles libsndfile).
+- `m4a/aac/wma` and all video containers go through PyAV (which bundles FFmpeg, so **no system ffmpeg is needed**).
+- Containers with several audio tracks (common in mkv/ts) let you pick a track in the interface; the default is the first one.
+- A video with no audio track produces an explicit error rather than failing silently.
+- Output is always audio: `WAV 24-bit` (default) / `FLAC 24-bit` / `MP3`.
 
 ---
 
-## 模型清单与选择建议
+## Model list and selection advice
 
-RTF = 处理耗时 / 音频时长，**越小越快**；下表为本机（i7-13700H，2 线程，纯 CPU）实测值。
+RTF = processing time / audio duration; **smaller is faster**. The table below was measured on this machine (i7-13700H, 2 threads, CPU only).
 
-| 模型 | 体积 | 实测 RTF | 建议 |
+| Model | Size | Measured RTF | Advice |
 | --- | --- | --- | --- |
-| **DSP 基线** | 内置 | **0.008** | 对照用。传统高通 + 谱门限，不做任何「推断」，不会有音乐噪声，但也去不掉非平稳噪声。 |
-| **GTCRN** | 523 KB | 0.07–0.08 | 最快。强噪声下质量明显弱于 DPDFNet。适合快速预览。 |
-| **DPDFNet baseline** | 8.3 MB | 0.06–0.08 | 比 GTCRN 好，是「够用」的下限。 |
-| **DPDFNet2**（默认） | 9.7 MB | 0.13–0.15 | **速度与质量平衡最好，日常首选。** |
-| **DPDFNet4** | 11.1 MB | 0.22–0.32 | 更高质量，约 2 倍耗时。 |
-| **DPDFNet8** | 13.9 MB | 0.37–0.56 | 最高质量，约 3–4 倍耗时。长音频慎用。 |
-| **DPDFNet2 48kHz HR** | 10.0 MB | 0.20–0.24 | 48 kHz 原生模型，适合 48 kHz 素材。**注意：16 kHz 输入会被升采样到 48 kHz 输出。** |
-| **DeepFilterNet3** | 25.7 MB | 0.19–0.22 | 经典 DFN3，官方 Rust 可执行文件。另一套模型族，适合与 DPDFNet 对比。 |
+| **DSP baseline** | built in | **0.008** | For reference. A conventional high-pass plus spectral gating, it makes no "inference" at all, so there is no musical noise — but it cannot remove non-stationary noise either. |
+| **GTCRN** | 523 KB | 0.07–0.08 | The fastest. Clearly weaker than DPDFNet under strong noise. Good for a quick preview. |
+| **DPDFNet baseline** | 8.3 MB | 0.06–0.08 | Better than GTCRN; the "good enough" floor. |
+| **DPDFNet2** (default) | 9.7 MB | 0.13–0.15 | **The best speed/quality balance; the everyday first choice.** |
+| **DPDFNet4** | 11.1 MB | 0.22–0.32 | Higher quality, roughly 2× the time. |
+| **DPDFNet8** | 13.9 MB | 0.37–0.56 | Highest quality, roughly 3–4× the time. Use with care on long audio. |
+| **DPDFNet2 48kHz HR** | 10.0 MB | 0.20–0.24 | A native 48 kHz model, suited to 48 kHz material. **Note: 16 kHz input is upsampled to a 48 kHz output.** |
+| **DeepFilterNet3** | 25.7 MB | 0.19–0.22 | The classic DFN3, as the official Rust executable. A different model family, good for comparing against DPDFNet. |
 
-上表 8 个降噪引擎里，**DSP 基线是内置实现**（无权重），6 个 DPDFNet/GTCRN 由 `sherpa-onnx` 一个依赖提供，**DeepFilterNet3 是独立 exe、权重内嵌、无镜像**（只有 GitHub 一个来源）。
+Of the 8 denoising engines above, **the DSP baseline is a built-in implementation** (no weights), 6 DPDFNet/GTCRN models come from the single `sherpa-onnx` dependency, and **DeepFilterNet3 is a separate exe with the weights embedded and no mirror** (GitHub is its only source).
 
-### 带宽扩展（生成式，默认关闭）
+### Bandwidth extension (generative, off by default)
 
-这 3 个引擎的性质与上表**不同**，所以单独列：降噪是「去掉内容」，带宽扩展是**生成内容**。
+These 3 engines are **different in kind** from the table above, so they are listed separately: denoising *removes* content, bandwidth extension **generates** it.
 
-**三者的内存开销差得很远，所以块长按引擎分开定。** 实测（2026-09-22，48 kHz 单声道真实素材，独立进程记录峰值驻留）：
+**Their memory cost differs wildly, so the block length is fixed per engine.** Measured (2026-09-22, 48 kHz mono real material, peak resident tracked in a separate process):
 
-| 引擎 | 2 s 块 | 5 s 块 | 20 s 块 | 采用块长 |
+| Engine | 2 s block | 5 s block | 20 s block | Block length used |
 | --- | --- | --- | --- | --- |
-| NovaSR | 213 MB | 379 MB | 1242 MB | 20 s（默认） |
-| LavaSR | 168 MB | 191 MB | 327 MB | 20 s（默认） |
+| NovaSR | 213 MB | 379 MB | 1242 MB | 20 s (default) |
+| LavaSR | 168 MB | 191 MB | 327 MB | 20 s (default) |
 | **HiFi-GAN BWE** | 2042 MB | — | **7509 MB** | **2 s** |
-| （10 s 块的 HiFi-GAN：4340 MB） | | | | |
+| (10 s block of HiFi-GAN: 4340 MB) | | | | |
 
-**HiFi-GAN BWE 是异类**：默认的 20 s 块要 7.5 GB 内存，在空闲内存 4 GB 的机器上必然失败（实测两次单次分配失败：498 MB 与 1.48 GB），而批处理的内存守卫只按"单实例 200–500 MB"估、完全看不见这个尖峰。所以对它单独用 2 s 块 —— 代价经实测可忽略（2 s 块 vs 20 s 块输出**相对 RMS 只差 0.07%**、逐带频谱一致），而峰值降到约 2.0 GB（实测 30 s 与 60 s 输入都能跑完，且**峰值与素材长度无关**，因为峰值由单块决定）。
+**HiFi-GAN BWE is the odd one out**: the default 20 s block needs 7.5 GB of memory and is bound to fail on a machine with 4 GB free (measured twice as a single failed allocation: 498 MB and 1.48 GB), while the batch memory guard only assumes "200–500 MB per instance" and cannot see this spike at all. So it alone uses a 2 s block — and the cost was measured to be negligible (a 2 s block versus a 20 s block differs by only **0.07% relative RMS** in the output, with an identical per-band spectrum), while the peak drops to about 2.0 GB (measured: both 30 s and 60 s inputs run to completion, and **the peak is independent of material length**, because the peak is set by a single block).
 
-另外在加载模型**之前**加了内存预检（`core/bwe.py` 的 `estimate_peak_mb()`）：按上表拟合出的 `成本 = 斜率 × 块长 + 固定开销` 估算需求，空闲内存不够就**明确拒绝**并告诉你可以怎么办（关掉别的程序，或换 NovaSR——同样时长只需约 1/6 的内存），而不是把失败留给 ORT 深处的一次随机分配。取不到内存信息时按"未知"处理、放行，免得在探测失败的机器上把功能全拒掉。
+In addition, a memory pre-check was added **before** loading the model (`estimate_peak_mb()` in `core/bwe.py`): it estimates the requirement from the `cost = slope × block length + fixed overhead` fitted to the table above, and if free memory is insufficient it **refuses explicitly** and tells you what to do (close other programs, or switch to NovaSR, which needs about 1/6 of the memory for the same duration), instead of leaving the failure to some random allocation deep inside ORT. When memory information cannot be obtained it treats it as "unknown" and lets it through, so that a machine where probing fails does not lose the feature entirely.
 
-| 引擎 | 体积 | 实测 RTF | 8 kHz 以上相对通带（引擎**原始**输出） | 说明 |
+| Engine | Size | Measured RTF | Above 8 kHz, relative to the passband (engine's **raw** output) | Notes |
 | --- | --- | --- | --- | --- |
-| **NovaSR**（默认档） | 228 KB | **0.15** | +13.7（8–12k）/ +24.2（12–20k）dB | 约 52K 参数的时域卷积生成器，16 kHz → 48 kHz。听感最不刺耳，故作为默认档。 |
-| **HiFi-GAN BWE** | 4.2 MB | ~0.8 | +26.2 / +29.4 dB | HiFi-GAN 波网带宽扩展，MIT 许可，是最轻的高频补回档。 |
-| **LavaSR** | 60 MB | **0.13** | +71.1 / +89.1 dB | Vocos 带宽扩展 + Linkwitz–Riley 频谱合并。它宣传「保留低频只换高频」，但实测三个引擎都保留低频（5 kHz 以下与「仅降噪」的相关性 0.999–1.000），这一点并非它独有。**注意：本文早先记它 RTF 1.94（"比实时还慢"）——本轮未复现**（实测 0.129，与 NovaSR 的 0.124 几乎一样快；用户自己的运行日志也反证了 1.94）。 |
+| **NovaSR** (the default) | 228 KB | **0.15** | +13.7 (8–12k) / +24.2 (12–20k) dB | A time-domain convolutional generator of about 52K parameters, 16 kHz → 48 kHz. It sounds the least harsh, so it is the default. |
+| **HiFi-GAN BWE** | 4.2 MB | ~0.8 | +26.2 / +29.4 dB | HiFi-GAN wavenet bandwidth extension, MIT licensed, the lightest high-frequency restoration option. |
+| **LavaSR** | 60 MB | **0.13** | +71.1 / +89.1 dB | Vocos bandwidth extension + Linkwitz–Riley spectral merging. It advertises "keep the lows, replace only the highs", but measured, all three engines keep the lows (correlation with "denoise only" below 5 kHz is 0.999–1.000), so this is not unique to it. **Note: this document earlier recorded its RTF as 1.94 ("slower than real time") — that did not reproduce this round** (measured 0.129, almost exactly as fast as NovaSR's 0.124; the user's own run log also contradicts 1.94). |
 
-上表最后一列是**引擎原始输出**的电平失衡（缺陷④）。管线不会原样交付它：`core/bwe.py` 会把通带响度对齐回输入，并把生成频段压到**通带之下 12 dB**（`PipelineOptions.bwe_hf_target_db`）。
+The last column above is the level imbalance of the **engine's raw output** (defect ④). The pipeline does not deliver it as is: `core/bwe.py` aligns passband loudness back to the input and pushes the generated band to **12 dB below the passband** (`PipelineOptions.bwe_hf_target_db`).
 
-但这个"绝对电平目标"本身有个反方向的坑（缺陷⑤，2026-09-21 修复）：**当模型的原始高频本来就远低于目标时，规则会反过来变成巨额放大**。实测 NovaSR 在真实素材上原始高频比通带低约 42–55 dB，平衡据此算出 **g_hf = +31.56 dB**，把模型的宽带本底整体抬高成一层可听的高频嗡嗡声。现在加了护栏：**生成频段的增益只压不抬**（`bwe.MAX_HF_BOOST_DB`，默认 0 dB）。详见下文「缺陷⑤」。
+But that "absolute level target" has a trap in the opposite direction (defect ⑤, fixed 2026-09-21): **when the model's raw high frequencies are already far below the target, the rule turns into enormous amplification instead**. Measured, NovaSR's raw high frequencies on real material sit about 42–55 dB below the passband, the balance therefore computes **g_hf = +31.56 dB**, and lifts the model's broadband noise floor into an audible layer of high-frequency hum. There is now a guard: **the gain of the generated band may only be pushed down, never up** (`bwe.MAX_HF_BOOST_DB`, default 0 dB). See "defect ⑤" below for details.
 
-三个引擎的输出都是 **48 kHz**（管线在带宽扩展生效时默认输出其原生采样率，而不是再降回源采样率）。
-权重来自 hf-mirror（`huggingface.co` 在本机不可达），推理封装由 `audiosronnx` 提供（预发布版，见 `requirements.txt`）。
+All three engines output **48 kHz** (when bandwidth extension is active the pipeline outputs its native sample rate by default instead of converting back down to the source rate).
+The weights come from hf-mirror (`huggingface.co` is unreachable on this machine), and the inference wrapper is provided by `audiosronnx` (a pre-release, see `requirements.txt`).
 
-界面里的默认档取自 `models.json` 的 `bwe_default` 标记（标在 NovaSR 上）。此前 `EngineSpec` 没有这个字段，加载器会**静默丢弃**它，默认档实际退化成「按清单顺序取第一个」——已一并修正为保留该标记。
+The default option in the interface comes from the `bwe_default` flag in `models.json` (set on NovaSR). Previously `EngineSpec` had no such field, the loader would **silently drop** it, and the default effectively degraded to "take the first entry in the manifest order" — that has been fixed along with it, so the flag is now preserved.
 
 ---
 
-## 性能与资源实测（先量后改）
+## Performance and resource measurements (measure before you change)
 
-这一节的数字全部是**实测**（2026-09-21；本机 20 线程 / 15.6 GB 内存 / RTX 4060 Laptop 8 GB），
-素材是真实录屏 `bandicam 2026-09-21 13-54-07-025.mp4`（48 kHz 立体声，1077 s）。
-复现命令：`tools/measure_stages.py`（它按界面预设复跑，并打印每个阶段的秒数）。
+Every number in this section is **measured** (2026-09-21; this machine: 20 threads / 15.6 GB RAM / RTX 4060 Laptop 8 GB),
+and the material is a real screen recording, `bandicam 2026-09-21 13-54-07-025.mp4` (48 kHz stereo, 1077 s).
+To reproduce: `tools/measure_stages.py` (it re-runs the interface presets and prints the seconds for every stage).
 
-### 分阶段耗时：瓶颈是推理，不是解码或重采样
+### Stage timings: the bottleneck is inference, not decoding or resampling
 
-「试听用（增强）」整链（DPDFNet2 + NovaSR 带宽扩展 + 搁架 + 压缩 + 归一化，2 线程）：
+The whole "For audition (enhanced)" chain (DPDFNet2 + NovaSR bandwidth extension + shelf + compression + normalisation, 2 threads):
 
-| 阶段 | 秒 | 占比 |
+| Stage | Seconds | Share |
 | --- | --- | --- |
-| 降噪推理 | 261.9 | 62.4% |
-| 带宽扩展 | 123.3 | 29.4% |
-| 听感 EQ | 10.4 | 2.5% |
-| 前处理（高通 + 输入归一化） | 9.8 | 2.3% |
-| 静音裁剪 | 3.7 | 0.9% |
-| 混响指标 | 2.6 | 0.6% |
-| 压缩 | 2.1 | 0.5% |
-| 输出归一化 | 2.0 | 0.5% |
-| 解码 | 1.8 | 0.4% |
-| 电平统计 | 1.7 | 0.4% |
-| 写出 | 0.7 | 0.2% |
-| 重采样 / 时长对齐 | 0.0 | 0.0% |
-| **合计墙钟** | **420.0** | RTF 0.389 |
+| Denoise inference | 261.9 | 62.4% |
+| Bandwidth extension | 123.3 | 29.4% |
+| Perceptual EQ | 10.4 | 2.5% |
+| Pre-processing (high-pass + input normalisation) | 9.8 | 2.3% |
+| Silence trimming | 3.7 | 0.9% |
+| Reverb metrics | 2.6 | 0.6% |
+| Compression | 2.1 | 0.5% |
+| Output normalisation | 2.0 | 0.5% |
+| Decoding | 1.8 | 0.4% |
+| Level statistics | 1.7 | 0.4% |
+| Writing | 0.7 | 0.2% |
+| Resampling / duration alignment | 0.0 | 0.0% |
+| **Total wall clock** | **420.0** | RTF 0.389 |
 
-四条结论：
+Four conclusions:
 
-1. **推理占 91.8%**（降噪 62.4% + 带宽扩展 29.4%）。"瓶颈可能在解码 / HQ 重采样 / 并发被内存压到 1"的猜测**被否证**：解码 1.8 s、重采样 **0.00 s**（带宽扩展的输出率恰好就是 48000，不需要重采样）、时长对齐 0.00 s。
-2. **写出 310 MB 只用 0.67 s**，所以 `耗时`/`RTF` 不含写出这件事在实测里没有影响（口径仍单列，便于与历史数字比较）。
-3. **单个 18 分钟立体声文件走整链，进程峰值驻留 7358 MB。** 这才是批处理必须按内存收敛、而不是按核数收敛的真正原因——比"单实例 200–500 MB"高一个数量级。做长文件的批处理时请把这一点算进去。
-4. 三个带宽扩展引擎的实测 RTF 与本文早先记录**不符**：同一 120 s 片段上 NovaSR 14.9 s、LavaSR 15.5 s（RTF 0.124 / 0.129），**几乎一样快**。早先记的「LavaSR RTF 1.94、比实时还慢」**未复现**——用户自己 2026-09-21 21:04 的运行日志也反证它：同一条链整段（含 LavaSR）总耗时 502 s，若 LavaSR 真是 1.94 的 RTF，那一次至少要 2000 s 以上。
+1. **Inference accounts for 91.8%** (denoising 62.4% + bandwidth extension 29.4%). The guesses that "the bottleneck might be decoding / HQ resampling / concurrency being squeezed to 1 by memory" are **disproved**: decoding 1.8 s, resampling **0.00 s** (the bandwidth extension output rate happens to be exactly 48000, so no resampling is needed), duration alignment 0.00 s.
+2. **Writing 310 MB took only 0.67 s**, so excluding writing from `elapsed`/`RTF` made no measurable difference (the accounting is still kept separate so it can be compared with historical numbers).
+3. **A single 18-minute stereo file through the whole chain peaks at 7358 MB resident.** That is the real reason batch processing must converge on memory rather than on core count — an order of magnitude above "200–500 MB per instance". Factor this in when batch-processing long files.
+4. The measured RTF of the three bandwidth-extension engines **does not match** what this document recorded earlier: on the same 120 s excerpt, NovaSR took 14.9 s and LavaSR 15.5 s (RTF 0.124 / 0.129), **almost equally fast**. The earlier "LavaSR RTF 1.94, slower than real time" **did not reproduce** — the user's own run log from 2026-09-21 21:04 also contradicts it: that whole chain including LavaSR took 502 s in total, and if LavaSR really had RTF 1.94 that run would have needed at least 2000 s.
 
-### 线程数：不是"2–4 见顶"，而是 ≥4 反而更慢
+### Thread count: not "peaking at 2–4", but ≥4 being slower
 
-同一素材的片段、只跑降噪推理、同一进程内依次跑。为排除"越跑越热"的干扰，**首尾各跑一次相同配置**：
+Same material, an excerpt, denoise inference only, run one after another inside the same process. To rule out "it gets hotter as it goes", the **same configuration is run once at the beginning and once at the end**:
 
-| 引擎（片段） | 1 线程 | 2 线程 | 4 线程 | 8 线程 |
+| Engine (excerpt) | 1 thread | 2 threads | 4 threads | 8 threads |
 | --- | --- | --- | --- | --- |
-| DPDFNet2（180 s） | 47.0 s | 46.9 / 47.7 s（首尾两次） | 56.5 s（**+20%**） | 59.1 s（**+25%**） |
-| GTCRN（120 s） | 10.5 s | 10.9 s | 13.5 s（**+25%**） | — |
-| DPDFNet8（120 s） | 76.9 s | 74.4 s | 82.3 s（**+11%**） | — |
+| DPDFNet2 (180 s) | 47.0 s | 46.9 / 47.7 s (first and last) | 56.5 s (**+20%**) | 59.1 s (**+25%**) |
+| GTCRN (120 s) | 10.5 s | 10.9 s | 13.5 s (**+25%**) | — |
+| DPDFNet8 (120 s) | 76.9 s | 74.4 s | 82.3 s (**+11%**) | — |
 
-（另一轮 300 s 片段上的 DPDFNet2：2 线程 70.3 s → 4 线程 89.4 s（+27%）→ 8 线程 98.4 s（+40%），方向一致。）
+(Another round on a 300 s excerpt with DPDFNet2: 70.3 s on 2 threads → 89.4 s on 4 threads (+27%) → 98.4 s on 8 threads (+40%), the same direction.)
 
-- 首尾两次「2 线程」只差 **1.8%**，所以顺序 / 发热不是成因，这是真实的线程效应。
-- **1 与 2 线程在噪声内等价；4 线程起一致变慢**（相对默认 2 线程 +11%~25%），8 线程更慢。
-- 因此线程数**默认保持 2，并且不要往上调**。早先本文与界面写的"本机 20 线程，收益在 2–4 附近见顶"是**未实测的错误陈述**，已更正。
-- 一个测量口径提醒：本机安静时同一配置的重复测量噪声约 ±2%；有其它负载（浏览器放视频、游戏、远程控制等）时会放大到 20% 以上。所以这里**只采信大效应**——低于约 7% 的差异不足以判定。
+- The two "2 threads" runs at the beginning and the end differ by only **1.8%**, so ordering / heat is not the cause; this is a genuine thread effect.
+- **1 and 2 threads are equivalent within noise; from 4 threads on it gets consistently slower** (+11%–25% relative to the default of 2), and 8 threads is slower still.
+- So the thread count **stays at the default of 2, and should not be raised**. What this document and the interface used to say — "this machine has 20 threads, the benefit peaks around 2–4" — was an **unmeasured statement, and it was wrong**; it has been corrected.
+- A measurement caveat: on a quiet machine, repeated measurements of the same configuration have about ±2% noise; with other load (a browser playing video, a game, remote control) it grows past 20%. So **only large effects are trusted here** — a difference below about 7% is not enough to conclude anything.
 
-### RTF 表的口径
+### How the RTF table should be read
 
-上面「模型清单」里的 RTF 是**单声道**（16 kHz、短样本）实测值，即**每声道**的耗时。立体声素材要按 2 倍算：实测 DPDFNet2 在 48 kHz 立体声上是 RTF 0.23–0.27（= 每声道 0.12–0.13，与表中 0.13–0.15 一致）。
+The RTFs in "Model list" above are **mono** measurements (16 kHz, short clips), i.e. the time **per channel**. Stereo material costs 2×: measured, DPDFNet2 on 48 kHz stereo gives RTF 0.23–0.27 (= 0.12–0.13 per channel, consistent with the 0.13–0.15 in the table).
 
-### 长素材：真正的瓶颈是"帧电平"这一层的峰值内存（2026-10-01 实测并修复）
+### Long material: the real bottleneck is peak memory in the "frame level" layer (measured and fixed 2026-10-01)
 
-用户报「处理太慢」的那次是 **4139 s（69 分钟）48 kHz 立体声**，`deepfilternet3` + 「去闷（保真档）」预设，实测 `elapsed 734.72 s` / `RTF 0.1775`。下面两组都是**同一台机器、同一天、同一素材**上前后各跑一遍得到（`tools/measure_stages.py`，2 线程）。
+The run the user reported as "too slow" was **4139 s (69 minutes) of 48 kHz stereo** with `deepfilternet3` and the "De-muffle (faithful)" preset, measured at `elapsed 734.72 s` / `RTF 0.1775`. The two groups below were both obtained by running the same machine, the same day, on the same material, once before and once after the change (`tools/measure_stages.py`, 2 threads).
 
-**A. 对照实验（固定片段 1200 s，起点 900 s，无损 FLOAT wav）——口径最干净的一组**
+**A. Controlled experiment (fixed 1200 s excerpt starting at 900 s, lossless FLOAT wav) — the cleanest accounting of the lot**
 
-| 阶段 | 改动前 | 改动后（声道并行 auto） | 倍数 |
+| Stage | Before | After (automatic channel parallelism) | Factor |
 | --- | --- | --- | --- |
-| 降噪推理（DFN3 ×2 声道） | 219.23 s（83.0%） | **139.62 s** | **1.57×** |
-| 静音裁剪 | 5.87 s | **3.90 s** | 1.51× |
-| 前处理（高通） | 14.62 s | 15.42 s | 噪声内 |
-| 听感 EQ | 14.54 s | 14.90 s | 噪声内 |
-| 电平统计 / 输出归一化 / 混响 | 2.61 / 3.32 / 3.79 s | 2.64 / 3.22 / 4.16 s | 噪声内 |
-| **总墙钟** | **264.21 s**（RTF 0.220） | **184.04 s**（RTF 0.153） | **1.44×** |
-| **进程峰值驻留** | **4873 MB** | **2480 MB** | **−49%** |
+| Denoise inference (DFN3 ×2 channels) | 219.23 s (83.0%) | **139.62 s** | **1.57×** |
+| Silence trimming | 5.87 s | **3.90 s** | 1.51× |
+| Pre-processing (high-pass) | 14.62 s | 15.42 s | within noise |
+| Perceptual EQ | 14.54 s | 14.90 s | within noise |
+| Level statistics / output normalisation / reverb | 2.61 / 3.32 / 3.79 s | 2.64 / 3.22 / 4.16 s | within noise |
+| **Total wall clock** | **264.21 s** (RTF 0.220) | **184.04 s** (RTF 0.153) | **1.44×** |
+| **Peak process resident** | **4873 MB** | **2480 MB** | **−49%** |
 
-**B. 用户真实素材整段（4139 s，`--no-write`，同一次会话内各跑一次）**
+**B. The user's real material, whole file (4139 s, `--no-write`, each run once within the same session)**
 
-| 阶段 | 冻结基线（改动前代码） | 改动后 | 倍数 |
+| Stage | Frozen baseline (pre-change code) | After | Factor |
 | --- | --- | --- | --- |
-| 解码 | 15.08 s | 14.61 s | 1.03× |
-| 静音裁剪 | 30.55 s | **17.33 s** | **1.76×** |
-| 前处理 | 51.17 s | 56.24 s | 噪声内（略慢） |
-| 降噪推理 | 698.94 s（78.4%） | **473.82 s** | **1.475×** |
-| 听感 EQ | 52.94 s | 47.86 s | 1.11× |
-| 电平统计 / 输出归一化 | 9.34 / 10.50 s | 9.39 / 10.55 s | 1.0× |
-| 混响指标 | 22.84 s | **15.40 s** | 1.48× |
-| **总墙钟（不含写出）** | **891.44 s**（RTF 0.215） | **645.23 s**（RTF 0.156） | **1.38×** |
-| **进程峰值驻留** | **10149 MB**（跑期间可用内存一度 **0.00 GB**＝在换页） | **6949 MB** | **−32%** |
+| Decoding | 15.08 s | 14.61 s | 1.03× |
+| Silence trimming | 30.55 s | **17.33 s** | **1.76×** |
+| Pre-processing | 51.17 s | 56.24 s | within noise (slightly slower) |
+| Denoise inference | 698.94 s (78.4%) | **473.82 s** | **1.475×** |
+| Perceptual EQ | 52.94 s | 47.86 s | 1.11× |
+| Level statistics / output normalisation | 9.34 / 10.50 s | 9.39 / 10.55 s | 1.0× |
+| Reverb metrics | 22.84 s | **15.40 s** | 1.48× |
+| **Total wall clock (excluding writing)** | **891.44 s** (RTF 0.215) | **645.23 s** (RTF 0.156) | **1.38×** |
+| **Peak process resident** | **10149 MB** (free memory briefly hit **0.00 GB** = paging) | **6949 MB** | **−32%** |
 
-同一会话里基线 891.44 s、而用户自己记录的 734.72 s 更快——差 1.21×，说明用户那次运行时机器的负载比这次低（本项目既有口径：有负载时测量噪声 >20%）。**所以引用加速比请用上面 A/B 两组对照，不要拿"734.72 → 645.23"当比值。**
+In the same session the baseline was 891.44 s while the user's own record of 734.72 s is faster — a 1.21× gap, which means the machine was under less load during the user's run (an existing accounting rule of this project: with load, measurement noise exceeds 20%). **So quote the speed-up from the A/B pairs above, not from "734.72 → 645.23".**
 
-四条结论：
+Four conclusions:
 
-1. **降噪推理占 78–83%**，而 `deep-filter.exe` **只用约 1 个核**（pid 级采样 6 s 的 CPU 增量 = 0.98 核，本机 20 逻辑核；整段运行期间实测同时存在 **2 个** `deep-filter.exe`、各约 0.98 核）→ 声道并行是最直接的加速：每个声道本来就是**独立的**一次调用（保住声像的做法就是"同一模型分别作用于左右声道"），并行只是调度，**结果与串行逐位相同**（`tests/check_speed.py` 断言 `np.array_equal`）。实测 1.475–1.57× 而不是 2×，差额来自两个子进程共享磁盘（各自要写/读一个整段的临时 WAV）与主线程侧的 numpy/soundfile 调用。
-2. **峰值内存的主因不是推理，而是"帧电平"那一层的整张帧矩阵。** 旧写法（`_frames()`）会把 `(n_frames, win)` 的索引矩阵与采样矩阵一次性物化，成本随时长线性增长：1200 s 单声道**一次**遍历就要 **2197 MB**（tracemalloc 实测），而这条路径在整链里要跑 5–7 遍。整链峰值驻留实测 300 s→1249 MB、1200 s→4873 MB、4139 s→10149 MB（基线斜率 **≈ 4.03 MB × 素材秒数**）。改成按下标分块（`dsp.frame_rms_streaming`）后同一次遍历降到 **76 MB**（29×），整链斜率降到 **≈ 1.63 MB × 秒数**（4139 s：6949 MB），基线跑期间那种"可用内存 0.00 GB"的换页现象不再出现。
-3. **降噪推理之外的纯 Python 循环没有想象中贵。** 曾计划把 `_istft_block` 的逐帧重叠相加向量化（reshape + 整块加法），**实测反而慢 15%**（30 s 块 median 62.5 ms vs 53.8 ms）——整块加法每次都要重读重写整张输出数组，而逐帧只碰 8 KB 连续切片；只有把 OLA 单独摘出来量才显得"新的略快"（17.7 vs 20.1 ms）。同一块里真正的大头是 `irfft`（24 ms）。**该优化已被实测否证**，代码里保留原实现并把这次测量写进了 `dsp._istft_block` 的 docstring（免得下次再试）。前处理/听感 EQ 两段因此**没有实质改善**（实测差异都在噪声内）。
-4. **写回视频时"写出"还有一笔隐藏成本，它不在 `elapsed`/`rtf` 里。** 实测（300 s 立体声 48 kHz 源 → 回写 mp4）：`写出 9.88 s`，即 AAC 编码约 **30× 实时**，外推到 4139 s 约 **136 s**——占用户那次总墙钟的近五分之一，而 `elapsed 734.72 s` 里**一点都没体现**。这段没有优化（FFmpeg 的原生 AAC 编码基本单线程；画面是 stream copy，只占 1–2 s），本轮做的是**让它可见**：`stats.stage_times.write` 现在会写进 manifest。只输出音频时写出可忽略（310 MB 的 wav 实测 0.67 s）。
+1. **Denoise inference accounts for 78–83%**, and `deep-filter.exe` **uses only about 1 core** (pid-level sampling over 6 s gives a CPU increment of 0.98 cores on a 20-logical-core machine; during the whole run **2** `deep-filter.exe` processes were measured at once, each at about 0.98 cores) → channel parallelism is the most direct speed-up: each channel is already an **independent** invocation (the way to preserve the stereo image is precisely "apply the same model to the left and right channels separately"), parallelism is only scheduling, and **the result is bit-identical to serial** (`tests/check_speed.py` asserts `np.array_equal`). The measured 1.475–1.57× rather than 2× comes from the two child processes sharing the disk (each reading/writing a temporary WAV of the whole file) plus the numpy/soundfile calls on the main thread.
+2. **The dominant cause of peak memory is not inference but the whole frame matrix in the "frame level" layer.** The old implementation (`_frames()`) materialised the `(n_frames, win)` index matrix and the sample matrix in one go, with a cost growing linearly in duration: 1200 s mono cost **2197 MB** for a **single** traversal (tracemalloc), and that path runs 5–7 times in the whole chain. The measured peak resident for the whole chain was 300 s→1249 MB, 1200 s→4873 MB, 4139 s→10149 MB (baseline slope **≈ 4.03 MB × material seconds**). After switching to index-based chunking (`dsp.frame_rms_streaming`) the same traversal drops to **76 MB** (29×) and the whole-chain slope drops to **≈ 1.63 MB × seconds** (4139 s: 6949 MB); the "0.00 GB free memory" paging seen during the baseline run no longer occurs.
+3. **The pure-Python loops outside denoise inference are not as expensive as they look.** There was a plan to vectorise the per-frame overlap-add in `_istft_block` (reshape + whole-block addition) — **measured, it was 15% slower** (median 62.5 ms versus 53.8 ms on a 30 s block), because a whole-block addition re-reads and re-writes the entire output array every time whereas the per-frame path only touches an 8 KB contiguous slice; only when the OLA is timed in isolation does the new approach look "slightly faster" (17.7 versus 20.1 ms). The real cost in that same block is `irfft` (24 ms). **That optimisation was disproved by measurement**, so the code keeps the original implementation and this measurement was written into the docstring of `dsp._istft_block` (so it is not tried again next time). Pre-processing and perceptual EQ therefore show **no substantial improvement** (all measured differences are within noise).
+4. **When writing back to video there is a hidden "write" cost that is not in `elapsed`/`rtf`.** Measured (a 300 s stereo 48 kHz source written back to mp4): `write 9.88 s`, i.e. AAC encoding at about **30× real time**, extrapolating to about **136 s** for 4139 s — nearly a fifth of that user's total wall clock, and **entirely absent** from `elapsed 734.72 s`. This was not optimised (FFmpeg's native AAC encoder is essentially single-threaded; the picture is stream-copied and accounts for only 1–2 s); what this round did was **make it visible**: `stats.stage_times.write` is now written into the manifest. When only audio is output, writing is negligible (a 310 MB wav measured 0.67 s).
 
-### 一条可选的后续加速（已量、本轮不做）
+### One optional further speed-up (measured, not done this round)
 
-`scipy.fft.rfft/irfft(workers=-1)` 在同一 30 s 块上是 **13.4 ms vs numpy 28.0 ms（2.1×）**，而 FFT 是前处理/听感 EQ 两段（合计约 11% 墙钟）的大头。不做是因为 scipy 只是 `audiosronnx` 带进来的**可选**依赖（requirements.txt 第 24 行），一旦用户不装带宽扩展就会缺，凭空多一条"有 scipy 更快、没 scipy 更慢"的分支。真要做得先把它提升为显式依赖。
+`scipy.fft.rfft/irfft(workers=-1)` on the same 30 s block is **13.4 ms versus numpy's 28.0 ms (2.1×)**, and the FFT is the bulk of the pre-processing / perceptual EQ stages (about 11% of wall clock together). It was not done because scipy is only an **optional** dependency pulled in by `audiosronnx` (line 24 of requirements.txt); as soon as a user does not install bandwidth extension it goes missing, creating a brand-new "faster with scipy, slower without" branch out of thin air. To really do it, scipy would first have to be promoted to an explicit dependency.
 
-### 第二轮：把"整段级"临时数组全部改成按块（2026-10-01 实测）
+### Second round: converting every "whole-file-level" temporary array to chunked (measured 2026-10-01)
 
-第一轮把「帧电平」那一层的整张帧矩阵拆成按块之后，剩下的峰值由另一类写法撑着：
-`np.sqrt(np.mean(np.square(x.astype(np.float64))))` —— 它把整段升成 float64（4→8 字节）
-再复制一份平方结果，**瞬时内存是素材字节数的 4 倍**。审计发现同一模式散在 4 个地方：
+After the first round split the whole frame matrix in the "frame level" layer into chunks, the remaining peak was held up by another style of code:
+`np.sqrt(np.mean(np.square(x.astype(np.float64))))` — it promotes the whole file to float64 (4→8 bytes)
+and then makes another copy of the squared result, so **its instantaneous memory is 4× the material's byte count**. An audit found the same pattern scattered in 4 places:
 
-| 位置 | 改前峰值（1200 s 立体声/单声道实测） | 说明 |
+| Location | Before (measured peak, 1200 s stereo/mono) | Notes |
 | --- | --- | --- |
-| `dsp.analyze` | **1099 MB** | 每次运行调用 2–3 次 |
-| `dsp.normalize`（peak 模式） | **879 MB** | 每次运行调用 2 次 |
-| `engines._pad_tail` | **879 MB** | **每个声道一次**，而它只为给一段约 30 ms 的尾巴算一个增益 |
-| `ui/player._recompute_match_gains` | **1758 MB** | 每次装载 / 每次切「增益匹配」，**且在 Qt 槽里持锁执行**（界面卡顿） |
+| `dsp.analyze` | **1099 MB** | called 2–3 times per run |
+| `dsp.normalize` (peak mode) | **879 MB** | called 2 times per run |
+| `engines._pad_tail` | **879 MB** | **once per channel**, and only to compute a gain for a ~30 ms tail |
+| `ui/player._recompute_match_gains` | **1758 MB** | on every load / every toggle of "gain matching", **and executed while holding a lock in a Qt slot** (UI freeze) |
 
-现在统一走 `dsp.rms_blockwise / peak_blockwise / clipped_ratio_blockwise`（分块累加，
-峰值 O(块) 而不是 O(素材)）。同一数组上实测：**改前 634 ms / 1758 MB → 分块 645 ms / 122 MB，
-数值相对差 0**（`tests/check_speed.py` 逐项断言）。同类改动还有三处：
+They now all go through `dsp.rms_blockwise / peak_blockwise / clipped_ratio_blockwise` (chunked accumulation, peak O(chunk) instead of O(material)). Measured on the same array: **634 ms / 1758 MB before → 645 ms / 122 MB chunked, with a relative numerical difference of 0** (`tests/check_speed.py` asserts this item by item). There are three more changes of the same kind:
 
-- `media_io` 的 PyAV 解码改成**预分配输出缓冲**（旧写法"收集全部 chunk 再 concatenate"
-  实测峰值 = 结果字节的 **2.01×**：1200 s 立体声 884.8 MB vs 结果 439 MB）→ 实测 **1.10×**；
-- `ui/waveform` 不再为每条轨留一份整段单声道副本（69 分钟 48 kHz 立体声 = 763 MB/条轨，
-  且是导入时在 UI 线程同步做的）→ 改为按列分块求包络，**包络逐位相同**；
-- `enhance.spectral_shape` 的「无操作」分支不再 `x.copy()`（69 分钟 1.59 GB 白拷贝）。
+- PyAV decoding in `media_io` now uses a **pre-allocated output buffer** (the old "collect all chunks then concatenate" measured a peak of **2.01×** the result's byte count: 884.8 MB for 1200 s stereo versus a 439 MB result) → measured **1.10×**;
+- `ui/waveform` no longer keeps a whole-file mono copy per track (69 minutes of 48 kHz stereo = 763 MB per track, and it was done synchronously on the UI thread at import time) → it computes the envelope column-chunked instead, with the **envelope bit-identical**;
+- the "no-op" branch of `enhance.spectral_shape` no longer does `x.copy()` (a pointless 1.59 GB copy for 69 minutes).
 
-### 第三轮：并行推广到 FFT 阶段 + 复用导入时的解码结果（2026-10-01）
+### Third round: extending parallelism to the FFT stages + reusing the decoded result from import (2026-10-01)
 
-1. **听感 EQ / 前处理也按声道并行**（`spectral_shape(workers=…)`）：实测 1200 s 双声道
-   **15.09 s → 9.92 s（1.52×）**、300 s 上 3.05 s → 2.67 s（1.14×）、**逐位相同**。
-   可行的原因是这段是 FFT 主导，而 numpy 的 pocketfft 在 C 层释放 GIL。
-   （计划里"把 `_istft_block` 的 OLA 向量化"那条**已被实测否证**：见上文，慢 15%，代码里保留原实现。）
-2. **导入时已解码的音频直接交给流水线**（`PipelineOptions.predecoded`）：69 分钟视频的
-   解码实测 14.61 s / 1.59 GB，此前分析解一次、处理再解一次，**同一段素材同时留两份**。
-   现在按 (绝对路径, 音轨号) 校验后零拷贝复用，流水线还会再比一次时长（2% 或 1 s 内），
-   不吻合就照常解码。实测：命中时 `media_io.decode` 调用 **0 次**、结果逐位相同；
-   时长不吻合时**回退解码**（`tests/check_speed.py` 断言）。
+1. **Perceptual EQ / pre-processing are now channel-parallel too** (`spectral_shape(workers=…)`): measured on 1200 s stereo,
+   **15.09 s → 9.92 s (1.52×)**, and on 300 s 3.05 s → 2.67 s (1.14×), **bit-identical**.
+   It works because this stage is FFT-dominated and numpy's pocketfft releases the GIL in C.
+   (The plan item "vectorise the OLA in `_istft_block`" **was disproved by measurement**: see above, 15% slower; the original implementation stays.)
+2. **Audio that was already decoded at import time is handed straight to the pipeline** (`PipelineOptions.predecoded`): decoding a 69-minute video
+   measured 14.61 s / 1.59 GB, and previously analysis decoded it once and processing decoded it again, **keeping two copies of the same material at once**.
+   Now it is validated by (absolute path, track number) and reused with zero copies, and the pipeline also compares the duration once more (within 2% or 1 s),
+   falling back to decoding normally if they do not match. Measured: on a hit, `media_io.decode` is called **0 times** and the result is bit-identical;
+   when the duration does not match it **falls back to decoding** (`tests/check_speed.py` asserts this).
 
-### 声道并行（`PipelineOptions.parallel_channels`）
+### Channel parallelism (`PipelineOptions.parallel_channels`)
 
-- `auto`（默认）：按**空闲内存**闸门决定，够就 2 个声道同时跑。所需内存按素材长度算：`固定开销 + 每采样 12 B（DFN）/ 6 B（sherpa）/ 3 B（dsp）× 单声道采样数 + 600 MB 余量`。4139 s 立体声的闸门值实测 **3474 MB**。
-- `off`：强制串行。`on`：强制并行并**跳过闸门**（会打印提示，用户自担）。
-- 内存不足时**明确回落到串行并把原因打进日志**（不静默降级、也不硬闯 OOM）：本机空闲常年在 3–7 GB 之间，69 分钟素材确实可能不够。
-- 该参数**不进指纹**：它只改调度、不改数值（与 `num_threads` 同理）。
-- 用户素材上**未验证**的边界：>2 声道素材（`auto` 最多 2 并发）、以及 8 GB 显存卡上的带宽扩展与声道并行叠加（带宽扩展仍保持**逐声道串行**，因为它本来就在 `HEAVY_STAGE` 下）。
+- `auto` (default): decided by a **free-memory** gate; if there is enough, 2 channels run at once. The memory needed is computed from the material length: `fixed overhead + 12 B per sample (DFN) / 6 B (sherpa) / 3 B (dsp) × mono sample count + 600 MB margin`. For 4139 s stereo the measured gate value is **3474 MB**.
+- `off`: force serial. `on`: force parallel and **skip the gate** (it prints a notice; the user takes the risk).
+- When memory is insufficient it **unambiguously falls back to serial and logs the reason** (no silent downgrade, no charging into an OOM): free memory on this machine is between 3–7 GB all year round, and 69-minute material really may not fit.
+- This parameter **does not enter the fingerprint**: it only changes scheduling, not values (same as `num_threads`).
+- Boundaries **not verified** on user material: >2-channel material (`auto` allows at most 2 concurrent), and bandwidth extension together with channel parallelism on an 8 GB VRAM card (bandwidth extension stays **serial per channel**, because it already runs under `HEAVY_STAGE`).
 
-### 分阶段耗时现在会写进 manifest
+### Stage timings are now written into the manifest
 
-`stats.stage_times`（键同 `core/pipeline._STAGE_LABELS`，含 `write`）、`stats.wall_s`、`stats.channels`、`stats.device_notes` 都会登记进 `manifest.json`。此前是"先登记、后 `mark('write')`"，于是写盘/回写视频的耗时**从来没进过 manifest**——用户那次 734.72 s 的运行只留下 `elapsed`，瓶颈拆解永久丢失（只能靠外推猜）。`elapsed`/`rtf` 的口径**不变**（仍不含写出），便于与历史数字比较；要看总墙钟用 `wall_s` 或分阶段之和。
+`stats.stage_times` (keys identical to `core/pipeline._STAGE_LABELS`, including `write`), `stats.wall_s`, `stats.channels` and `stats.device_notes` are all recorded in `manifest.json`. Previously it was "record first, `mark('write')` later", so the cost of writing to disk / writing back to video **never made it into the manifest** — that 734.72 s run of the user's left only `elapsed`, and the bottleneck breakdown was lost forever (guessable only by extrapolation). The accounting of `elapsed`/`rtf` is **unchanged** (still excluding writing) so it stays comparable with historical numbers; to see the total wall clock use `wall_s` or the sum of the stages.
 
-### 降噪强度（`attenuation_limit_db`）实测：语义与影响
+### Denoise strength (`attenuation_limit_db`) measured: semantics and impact
 
-这个参数此前在本文里被写反了（"0 dB ≈ 不降噪"），所以单独测清楚：
+This parameter was written the wrong way round earlier in this document ("0 dB ≈ no denoising"), so it was measured properly on its own:
 
-**语义——`0` 是「不设上限」，不是「不降噪」。** 纯白噪声输入（−30.5 dBFS）下，参数值与实测衰减量：
+**Semantics — `0` means "no limit", not "no denoising".** With pure white noise as input (−30.5 dBFS), the parameter value and the measured attenuation:
 
 | `attenuation_limit_db` | 0 | 3 | 6 | 12 | 18 | 30 | 60 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 实测衰减 | **69.3 dB** | 3.0 | 6.0 | 12.0 | 18.0 | 30.0 | 58.3 dB |
+| Measured attenuation | **69.3 dB** | 3.0 | 6.0 | 12.0 | 18.0 | 30.0 | 58.3 dB |
 
-即 `3–30` 是字面的 dB 上限，而 `0` 直接冲到 69 dB（比 `60` 还狠）。**在真实素材上这表现为把最安静的帧压到 −107.8 dBFS**（数字静音）——正是本项目在别处明确反对的「硬门限把停顿压成数字静音」。`0` 与 `30` 之间的差异**不是"少压"而是"多压"**，很容易被误当成"关闭降噪"。（`DeepFilterNet3` 的同一个参数约定相反：`0` = 不降噪、`100` = 不设上限。）
+So `3–30` are the literal dB limits, while `0` shoots straight to 69 dB (harsher than `60`). **On real material this shows up as pushing the quietest frames down to −107.8 dBFS** (digital silence) — exactly the "hard gate that squashes pauses into digital silence" this project explicitly opposes elsewhere. The difference between `0` and `30` is **not "pressing less" but "pressing more"**, and it is easily mistaken for "denoising switched off". (`DeepFilterNet3` uses the opposite convention for the same parameter: `0` = no denoising, `100` = no limit.)
 
-**影响——在 6/12/18 之间几乎测不出差别。** 同一 60 s 真实片段上四个取值的对比：
+**Impact — between 6/12/18 a difference is barely measurable.** A comparison of four values on the same 60 s real excerpt:
 
-| `att` | 输出 RMS | 帧电平 p50 | 静音段底噪降幅 |
+| `att` | Output RMS | Frame level p50 | Noise-floor reduction in silent stretches |
 | --- | --- | --- | --- |
 | 0 | −33.75 dBFS | −51.3 | 21.1 dB |
 | 6 | −33.47 | −50.8 | 21.1 dB |
 | 12 | −33.65 | −51.2 | 21.1 dB |
 | 18 | −33.71 | −51.2 | 21.1 dB |
 
-三个取值的底噪降幅**完全一致**（21.1 dB）、RMS 相差不到 0.3 dB——说明这段对话素材里模型几乎没碰到这个上限，**该旋钮在 6–18 范围内不改变结果**。所以三个预设都不去动它（默认 12）是**实测支持**的选择，而不是偷懒。真正需要警惕的只有 `0`。
+The three values give an **identical** noise-floor reduction (21.1 dB) and RMS values within 0.3 dB — so on this conversational material the model barely touches the limit at all, and **this knob does not change the result anywhere in the 6–18 range**. That the three presets leave it alone (default 12) is therefore a choice **supported by measurement**, not laziness. The only value worth watching out for is `0`.
 
 ---
 
-## GPU / CUDA（可选；实测结论写在前面）
+## GPU / CUDA (optional; measured conclusions first)
 
-**一句话：带宽扩展上 GPU 有用（快 1.5×）；sherpa 降噪上 GPU 会慢 6.6×；DeepFilterNet3 没有可用的 GPU 路径。** 默认配置就是按这几条实测结论写的，所以**不开 GPU 也是当前的最优组合**；装了 GPU 也只会让带宽扩展那一档变快。
+**In one sentence: the GPU helps bandwidth extension (1.5× faster); on sherpa denoising the GPU is 6.6× slower; DeepFilterNet3 has no usable GPU path.** The default configuration was written from these measurements, so **not enabling the GPU is already the current optimum**; installing a GPU only makes the bandwidth-extension option faster.
 
-### DeepFilterNet3 为什么没有 GPU 路径（2026-10-01 探针实测）
+### Why DeepFilterNet3 has no GPU path (probe measurements, 2026-10-01)
 
-用户那次的引擎正是 `deepfilternet3`，而它在整链里占 83%，所以"能不能上 GPU"必须先回答这一条：
+That user's engine was `deepfilternet3`, which accounts for 83% of the whole chain, so "can it go on the GPU" had to be answered first:
 
-- 我们用的是官方 Rust 可执行文件 `deep-filter-0.5.6-x86_64-pc-windows-msvc.exe`（内嵌权重，26.9 MB）。直接跑 `deep-filter.exe --help` 的选项全表是：`-m/--pf/--pf-beta/-D/-a/--min-db-thresh/--max-db-erb-thresh/--max-db-df-thresh/--reduce-mask/-v/-o/-h/-V` —— **没有 `--cuda`，也没有 `--threads`**。
-- 它不仅是 CPU-only，而且**基本单线程**：pid 级采样 6 s，CPU 时间增量 **0.98 核**（20 逻辑核机器上）。
-- 换 torch/CUDA 版 DFN 需要新增约 2.5 GB 依赖（本机 venv 里没有 torch，也没装），而同类"小 kernel 逐帧模型"在本机已有反例：sherpa 的 DPDFNet 上 CUDA **慢 6.6–15×**（见下表与「上一轮未验证项的补充试验」）。
-- 因此**本轮不动 GPU**：用户瓶颈所在的那 83% 拿不到 GPU 收益，而唯一已验证的 GPU 收益（带宽扩展 ×1.48–1.62）不在该预设里、且代码已经默认开启。这张卡当时另有 5.0/8.0 GB 显存被占用（`nvidia-smi`）。
+- We use the official Rust executable `deep-filter-0.5.6-x86_64-pc-windows-msvc.exe` (weights embedded, 26.9 MB). The full option list from `deep-filter.exe --help` is: `-m/--pf/--pf-beta/-D/-a/--min-db-thresh/--max-db-erb-thresh/--max-db-df-thresh/--reduce-mask/-v/-o/-h/-V` — **there is no `--cuda`, and no `--threads`**.
+- It is not only CPU-only, it is **essentially single-threaded**: pid-level sampling over 6 s gives a CPU-time increment of **0.98 cores** (on a 20-logical-core machine).
+- Switching to a torch/CUDA build of DFN would add about 2.5 GB of dependencies (there is no torch in this machine's venv, and none was installed), and there is already a counter-example for this class of "small-kernel per-frame model" on this machine: CUDA on sherpa's DPDFNet is **6.6–15× slower** (see the table below and "Supplementary experiment for last round's unverified items").
+- So **this round does not touch the GPU**: the 83% that is the user's bottleneck cannot gain from the GPU, and the only verified GPU gain (bandwidth extension ×1.48–1.62) is not in that preset and is already enabled by default in the code. At the time that card also had 5.0/8.0 GB of VRAM occupied by something else (`nvidia-smi`).
 
-**结论**：这类素材要提速度，正确的杠杆是**并行 + 减少整段遍历**（见上文「长素材」一节），不是 GPU。
+**Conclusion**: to speed up this kind of material the right levers are **parallelism + fewer whole-file traversals** (see "Long material" above), not the GPU.
 
-### 实测（2026-09-21，RTX 4060 Laptop 8 GB，真实素材片段，各重复 2–3 次）
+### Measured (2026-09-21, RTX 4060 Laptop 8 GB, real material excerpts, each repeated 2–3 times)
 
-| 环节 | CPU | CUDA | 结论 |
+| Stage | CPU | CUDA | Conclusion |
 | --- | --- | --- | --- |
-| 带宽扩展 NovaSR（20–28.8 s 片段） | RTF 0.066–0.083 | RTF 0.041–0.053 | **快 1.48–1.62×** → `auto` 选 CUDA |
-| sherpa 降噪 DPDFNet2（30 s 片段） | 3.79 / 3.90 s（RTF 0.126） | 25.18 / 25.26 / 25.41 s（RTF 0.842） | **慢 6.6×** → `auto` 选 CPU |
-| sherpa 降噪 DPDFNet2（60 s 片段） | 12.08 s（RTF 0.201） | 75.50 s（RTF 1.258） | 同上（比值与长度无关） |
+| Bandwidth extension NovaSR (20–28.8 s excerpt) | RTF 0.066–0.083 | RTF 0.041–0.053 | **1.48–1.62× faster** → `auto` picks CUDA |
+| sherpa denoising DPDFNet2 (30 s excerpt) | 3.79 / 3.90 s (RTF 0.126) | 25.18 / 25.26 / 25.41 s (RTF 0.842) | **6.6× slower** → `auto` picks CPU |
+| sherpa denoising DPDFNet2 (60 s excerpt) | 12.08 s (RTF 0.201) | 75.50 s (RTF 1.258) | same as above (the ratio is independent of length) |
 
-降噪在 GPU 上反而慢的原因：DPDFNet 是**逐帧带状态的流式模型**，每帧要发大量极小的 kernel，GPU 的 kernel 启动与同步延迟盖过了算力收益。三次重复的方差只有 ±0.5%，且比值与音频长度无关，所以这不是"没预热"——能跑在 GPU 上不等于值得跑在 GPU 上。
+Why denoising is slower on the GPU: DPDFNet is a **per-frame stateful streaming model**, so every frame dispatches a large number of tiny kernels and the GPU's kernel-launch and synchronisation latency outweighs the compute gain. The variance across three repeats is only ±0.5%, and the ratio is independent of audio length, so this is not "it was not warmed up" — being able to run on a GPU is not the same as being worth running on a GPU.
 
-### 设备是 `auto` 决定的，而 `auto` 是"实测过才上"
+### The device is decided by `auto`, and `auto` is "only what has been measured"
 
-`core/engines.py` 的 `EngineParams` 有两个设备开关，默认都是 `"auto"`：
+`EngineParams` in `core/engines.py` has two device switches, both defaulting to `"auto"`:
 
-- `bwe_device`（带宽扩展）：`auto` → 有 CUDA 且显存够就用 CUDA，否则纯 CPU。
-- `sherpa_provider`（降噪）：`auto` → **总是 CPU**（因为实测慢 6.6 倍）；要覆盖必须显式传 `"cuda"`。
+- `bwe_device` (bandwidth extension): `auto` → use CUDA if there is CUDA and enough VRAM, otherwise CPU only.
+- `sherpa_provider` (denoising): `auto` → **always CPU** (because it was measured to be 6.6× slower); overriding it requires passing `"cuda"` explicitly.
 
-两者都**不进指纹**：设备只影响速度，输出差异已量化——带宽扩展最大逐样本差 1.06e-03（相对 RMS 0.54%），降噪 2.15e-04（0.012%）。即**不是逐位相同**，所以同参数复用**可能**取到另一台设备算出的文件；这是刻意取舍（否则换设备就要整段重算），差异量级如上。
+Neither **enters the fingerprint**: the device only affects speed and the output difference has been quantified — at most 1.06e-03 per sample for bandwidth extension (0.54% relative RMS) and 2.15e-04 (0.012%) for denoising. That is, they are **not bit-identical**, so reusing the same parameters **may** pick up a file computed by the other device; this is a deliberate trade-off (otherwise changing devices would force a full recompute), and the magnitude of the difference is as stated.
 
-### 另一条实测到的硬约束：一个进程里两套 ONNX Runtime 的 CUDA 会互相顶掉
+### Another measured hard constraint: two ONNX Runtimes in one process knock each other's CUDA out
 
-pip 的 `onnxruntime-gpu` 与 sherpa-onnx **各自带一套 ORT**。实测：只要进程里**先**建过 pip onnxruntime 的 CUDA 会话，sherpa 自带的 ORT 再初始化 CUDA provider 就必然失败（`Error 1114: DLL 初始化例程失败`），于是回落到 CPU。
+pip's `onnxruntime-gpu` and sherpa-onnx **each ship their own copy of ORT**. Measured: once a process has created a CUDA session with pip's onnxruntime **first**, sherpa's bundled ORT inevitably fails when it initialises the CUDA provider (`Error 1114: DLL initialization routine failed`) and falls back to CPU.
 
-- 影响：sherpa 的 `"cuda"` 档在真实应用里**不可靠**（带宽扩展先跑就会触发）。这是"不给降噪上 GPU"的第二个独立理由。
-- 回落可见、不静默：`provider_desc()` 会写成「CPU（**CUDA 会话创建失败后回落**：…）」，日志里能看到。
+- Impact: sherpa's `"cuda"` setting is **unreliable** in the real application (running bandwidth extension first triggers this). This is the second, independent reason not to put denoising on the GPU.
+- The fallback is visible, not silent: `provider_desc()` reports "CPU (**fallback after the CUDA session failed to be created**: …)" and you can see it in the log.
 
-**这个冲突还有一个更硬的后果：进程在退出阶段段错误。** 实测（2/2 复现）：
+**This conflict has one harder consequence: the process segfaults during shutdown.** Measured (reproduced 2/2):
 
-| 该进程里做过什么 | 退出码 |
+| What the process did | Exit code |
 | --- | --- |
-| 只有 pip onnxruntime 用 CUDA | 0 |
-| 只有 sherpa 用 CUDA | 0 |
-| **pip 用过 CUDA，之后 sherpa 又**请求**CUDA（必然失败回落）** | **139（段错误）** |
-| **默认配置**：pip 用 CUDA + sherpa 用 CPU | **0** |
-| pip 用 CUDA + sherpa 显式 CPU | 0 |
+| Only pip onnxruntime used CUDA | 0 |
+| Only sherpa used CUDA | 0 |
+| **pip used CUDA, then sherpa **requested** CUDA (which necessarily failed and fell back)** | **139 (segfault)** |
+| **Default configuration**: pip uses CUDA + sherpa uses CPU | **0** |
+| pip uses CUDA + sherpa explicitly CPU | 0 |
 
-即**只有"显式让 sherpa 试 CUDA"这条实验路径会崩**，而且崩在退出阶段——此时结果早已写出，文件是完整的。默认配置退出码为 0，用户碰不到它。
+So **only the experimental path of "explicitly let sherpa try CUDA" crashes**, and it crashes during shutdown — by which time the result has long been written and the file is complete. The default configuration exits with 0 and the user never encounters it.
 
-`tests/check_gpu.py` 用**独立子进程**分别验证这两条路径的退出码，并把 139 当成**观测结果记录**（而不是测试失败，也不是"没问题"）。同一套件里还有 `tests/gpu_probe.py` 作为子进程探针：隔离之后 sherpa 的 CUDA 才能真正生效（没有 pip ORT 干扰），于是它的耗时与 CPU/GPU 等价性都能实测——实测 CPU 3.82 s vs CUDA 35.26 s，数值最大差 2.18e-05（相对 RMS 0.010%）。
+`tests/check_gpu.py` verifies the exit codes of these two paths in **separate child processes**, and records 139 as an **observed result** (not as a test failure, and not as "no problem"). The same suite contains `tests/gpu_probe.py` as a child-process probe: once isolated, sherpa's CUDA can genuinely take effect (with no pip ORT interference), so both its runtime and its CPU/GPU equivalence can be measured — measured CPU 3.82 s versus CUDA 35.26 s, with a maximum numerical difference of 2.18e-05 (0.010% relative RMS).
 
-### 怎么装（可选，约 2 GB；默认不装）
+### How to install it (optional, about 2 GB; not installed by default)
 
-不装时全部走 CPU、功能完整。要试 GPU 时：
+Without it everything runs on the CPU and is fully functional. To try the GPU:
 
 ```powershell
-# 1) CUDA 12.9 + cuDNN 9.26 运行库随 wheel 一起装（约 1.82 GB）
-#    务必加镜像：默认源实测只有 256 KB/s，装完要 2 小时以上
+# 1) CUDA 12.9 + cuDNN 9.26 runtime libraries are installed with the wheel (about 1.82 GB)
+#    Do add a mirror: the default index was measured at only 256 KB/s, which takes over 2 hours
 .\.venv\Scripts\python.exe -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple `
     "onnxruntime-gpu[cuda,cudnn]==1.26.0"
 
-# 2) sherpa 换 GPU wheel（约 191 MB，只能经 hf-mirror；huggingface.co 不可达）
-#    注意：本轮实测它只会让降噪变慢，除非你确实要在 GPU 上做对比实验，否则不必装
+# 2) swap sherpa for the GPU wheel (about 191 MB, available only via hf-mirror; huggingface.co is unreachable)
+#    Note: measured this round, it only makes denoising slower; do not install it unless you really want to run GPU comparisons
 curl -L -o sherpa_gpu.whl "https://hf-mirror.com/csukuangfj2/sherpa-onnx-wheels/resolve/main/cuda/1.13.8/sherpa_onnx-1.13.8%2Bcuda12.cudnn9-cp312-cp312-win_amd64.whl"
 .\.venv\Scripts\python.exe -m pip install --no-deps sherpa_gpu.whl
 ```
 
-选 CUDA 12 而不是 13 的原因：`onnxruntime-gpu` 从 1.27 起默认按 CUDA 13 构建，而 sherpa 的 GPU wheel 是 `+cuda12.cudnn9`；用 1.26.0（CUDA 12.8）能让两者**共用同一套 CUDA 12 运行库**，而不是装两套 1.8 GB。
+Why CUDA 12 rather than 13: `onnxruntime-gpu` has been built against CUDA 13 by default since 1.27, whereas sherpa's GPU wheel is `+cuda12.cudnn9`; using 1.26.0 (CUDA 12.8) lets the two **share a single set of CUDA 12 runtime libraries** instead of installing two 1.8 GB sets.
 
-`core/cuda_env.py` 负责让 ORT 找得到 CUDA/cuDNN 的 DLL（它们既不在 venv 的默认搜索路径里，也不在 conda base 的 site-packages 里）。查找顺序：`AE_CUDA_DLL_DIR` → venv 的 `nvidia/*/bin` → conda base 的 `torch/lib`（base 的 torch 2.5.1+cu121 自带一套 CUDA 12.1 + cuDNN 9.1）。命中后加进**本进程**的 PATH 与 `os.add_dll_directory`；**只读使用，不复制 DLL、不改系统 PATH**。另外它会用 `nvidia-smi` 做显存预检（`AE_GPU_MIN_FREE_MB` 可调，默认 512 MiB），显存不够就回落 CPU 而不是硬闯。
+`core/cuda_env.py` is what lets ORT find the CUDA/cuDNN DLLs (they are neither on the venv's default search path nor in conda base's site-packages). The search order is `AE_CUDA_DLL_DIR` → the venv's `nvidia/*/bin` → conda base's `torch/lib` (base's torch 2.5.1+cu121 brings its own CUDA 12.1 + cuDNN 9.1). On a hit they are added to **this process's** PATH and to `os.add_dll_directory`; they are **used read-only — no DLLs are copied and the system PATH is not modified**. It also uses `nvidia-smi` for a VRAM pre-check (`AE_GPU_MIN_FREE_MB`, default 512 MiB); if there is not enough VRAM it falls back to the CPU instead of charging ahead.
 
-"实际用了哪个设备"是**回读出来的**，不是声明的：sherpa 的 Python API 没有 provider 回读（只有 `run`/`sample_rate`），所以 `cuda_env.loaded_cuda_providers()` 直接**枚举进程已加载的模块**，看到 `onnxruntime_providers_cuda.dll` 才算数。
+"Which device was actually used" is **read back**, not declared: sherpa's Python API has no provider read-back (only `run`/`sample_rate`), so `cuda_env.loaded_cuda_providers()` **enumerates the modules already loaded into the process**, and only seeing `onnxruntime_providers_cuda.dll` counts.
 
-### 回退（回到纯 CPU）
+### Rolling back (back to CPU only)
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip uninstall -y onnxruntime-gpu nvidia-cudnn-cu12 `
     nvidia-cublas-cu12 nvidia-cuda-runtime-cu12 nvidia-cuda-nvrtc-cu12 `
     nvidia-cufft-cu12 nvidia-curand-cu12 nvidia-nvjitlink-cu12
-.\.venv\Scripts\python.exe -m pip install onnxruntime==1.30.0     # 回到原 CPU 版
-.\.venv\Scripts\python.exe -m pip install sherpa-onnx==1.13.8     # 换回 CPU-only wheel
+.\.venv\Scripts\python.exe -m pip install onnxruntime==1.30.0     # back to the original CPU build
+.\.venv\Scripts\python.exe -m pip install sherpa-onnx==1.13.8     # back to the CPU-only wheel
 ```
 
-装 GPU 版后 `pip check` 会报 `audiosronnx` 依赖的 `onnxruntime` 未满足——这是**良性**的：`onnxruntime` 模块仍可导入（由 `onnxruntime-gpu` 提供），只是发行版名字不同。
+After installing the GPU build, `pip check` reports that `audiosronnx`'s `onnxruntime` dependency is unsatisfied — that is **benign**: the `onnxruntime` module is still importable (provided by `onnxruntime-gpu`), only the distribution name differs.
 
-### 上一轮"未验证项"的补充试验（2026-09-21 晚，已实测）
+### Supplementary experiment for last round's "unverified items" (2026-09-21 evening, now measured)
 
-上一版这里写着两件"没做 / 没测"的事，现在补测了：
+The previous version of this section listed two things that had not been done / measured. They have now been tested:
 
-1. **降噪的 GPU 档在长素材下会不会 OOM？——不会，只是慢。** 独立进程里跑 DPDFNet2（避开 ORT 冲突）：
+1. **Does the denoising GPU setting OOM on long material? — No, it is only slower.** Running DPDFNet2 in a separate process (avoiding the ORT conflict):
 
-   | 素材长度 | CPU | CUDA | CUDA 显存增量 |
+   | Material length | CPU | CUDA | CUDA VRAM increment |
    | --- | --- | --- | --- |
-   | 60 s | 9.61 s | **144.45 s**（慢 15×） | 72 MiB |
-   | 180 s | 35.19 s | **253.53 s**（慢 7.2×） | ≤ 采样精度 |
+   | 60 s | 9.61 s | **144.45 s** (15× slower) | 72 MiB |
+   | 180 s | 35.19 s | **253.53 s** (7.2× slower) | ≤ sampling precision |
 
-   显存增量始终在 100 MiB 量级（8 GB 卡），离 OOM 很远。所以检查点里"必须调小 `MAX_FRAMES_SINGLE_PASS` 否则会 OOM"的担心**没有复现**，也就**没有为它改那个常量**（CPU 路径本来跑得好好的，不该为一条更慢的路径付出分段的代价）。实测范围内（≤180 s、8.6M 帧）**未发现 OOM**；更长的没测（按这个速度跑一次要十几分钟），所以**上限没找到**——如实记着。
+   The VRAM increment stays on the order of 100 MiB (on an 8 GB card), nowhere near an OOM. So the checkpoint's worry that "`MAX_FRAMES_SINGLE_PASS` must be reduced or it will OOM" **did not reproduce**, and consequently that constant was **not changed for it** (the CPU path works fine, and it should not pay a chunking penalty for a slower path). Within the measured range (≤180 s, 8.6M frames) **no OOM was found**; longer material was not tested (at this speed one run takes over ten minutes), so **no upper bound was found** — recorded honestly.
 
-2. **批量并发下 GPU 会怎样？——应用内不会并发抢显存，但别同时开两个实例。**
-   - 应用内的批处理里，带宽扩展阶段本来就被 `HEAVY_STAGE`（`Semaphore(1)`）**互斥成串行**，所以同一个进程内不会出现两个 GPU 任务同时抢显存。
-   - 实测**两个独立进程**并发（等价于同时开两个应用实例）跑带宽扩展：各自 6.00 / 6.15 s，而串行单个 4.14 s —— 每个文件慢 **1.45–1.49×**，两个文件的总墙钟 8.96 s vs 串行的 8.28 s，**总吞吐没有提升、反而略降**。所以不要用两个实例并行跑带宽扩展。
-   - 那次并行运行期间系统级显存增量报了约 4.5 GB，但**这个数字不可归因**：Windows/WDDM 下 `nvidia-smi --query-compute-apps` 取不到按进程的显存，而当时 Photoshop 与 DaVinci Resolve 也在用显卡。所以它**不能当显存预算用**，这里只记方法学限制。
+2. **What does the GPU do under batch concurrency? — The application does not contend for VRAM internally, but do not run two instances at once.**
+   - Inside the application's batch processing, the bandwidth-extension stage is already **serialised** by `HEAVY_STAGE` (`Semaphore(1)`), so two GPU tasks never contend for VRAM within one process.
+   - Measured with **two independent processes** in parallel (equivalent to running two app instances) doing bandwidth extension: each took 6.00 / 6.15 s, while a single serial run took 4.14 s — **1.45–1.49× slower per file**, with a total wall clock of 8.96 s for two files versus 8.28 s serial, so **total throughput did not improve and in fact dropped slightly**. So do not run bandwidth extension in two instances in parallel.
+   - During that parallel run the system-level VRAM increment reported about 4.5 GB, but **that number cannot be attributed**: under Windows/WDDM, `nvidia-smi --query-compute-apps` cannot get per-process VRAM, and Photoshop and DaVinci Resolve were using the card at the time too. So it **must not be used as a VRAM budget**; it is recorded here only as a methodological limitation.
 
-   仍未验证：**多声道素材下 BWE 的 GPU 显存**（本轮所有 GPU 数字都是单声道片段）。
+   Still unverified: **BWE VRAM with multi-channel material** (every GPU number this round came from mono excerpts).
 
 ---
 
-## 参数说明
+## Parameter reference
 
-| 参数 | 说明 |
+| Parameter | Description |
 | --- | --- |
-| **降噪强度**（0–30，默认 12） | 仅对 DPDFNet 生效，映射到模型的 `attenuation_limit_db` = **允许的最大衰减量**。**`0` 是特例：它表示「不设上限」（压得最狠），不是「不降噪」**——实测纯白噪声输入下 `0` 得到 **69.3 dB** 的衰减，比 `60` 还狠；其余取值就是字面的上限：实测 `3/6/12/18/30` 分别得到 3.0 / 6.0 / 12.0 / 18.0 / 30.0 dB 衰减。另一处坑：**DeepFilterNet3 的同一参数约定相反**（`-a`，0 = 不降噪、100 = 不设上限），界面上已分别标注。本文早先写成「0 dB ≈ 不降噪」，**是反的，已更正**。 |
-| **裁剪首尾静音** | 按自适应阈值裁掉开头/结尾的静音段。阈值取「帧电平高分位 − 40 dB」并夹在 −75 dBFS 以上，因此对整体电平很低的素材也自适应，而不是套固定绝对值。**中间静音默认保留**（删掉会改变时间轴）。 |
-| **增益归一化** | 勾选后目标电平作用于**输出**。内部做两次：送进引擎前先调理电平（低电平素材更稳定），出引擎后再校正到目标，兑现「输出达到目标电平」的契约。 |
-| **保持立体声** | 默认开。增强模型都是单声道训练的，但把同一模型分别作用于左右声道是标准做法，能保住声像。关掉则降混为单声道。 |
-| **线程数** | 传给引擎的内部线程数（默认 2）。**实测：不是越多越快**——1 与 2 等价，4 线程起反而慢 7–29%（见下文「性能与资源实测」）。此参数不影响结果，只影响速度，所以不进指纹。 |
-| **输出格式** | WAV 24-bit（默认）/ FLAC 24-bit / MP3。 |
-| **处理完自动写出结果** | 默认开。结果按命名规范写到**输入文件所在目录的 `AudioEnhancer_zk21/` 子文件夹**（不再是项目 `out/`），并带参数指纹用于「同参数复用」。关掉则只在内存里出结果，需要落盘时用工具栏的「导出为…」。 |
-| **高通（0 = 关闭）** | 所有引擎共用的一个前处理阶段，默认 80 Hz。滤掉直流与低频隆隆声，DSP 基线里也有对应的一环。 |
-| **听感增强：高频搁架** | 搁架提升把 2–5 kHz 的「清晰度」区抬起来，中心固定 3000 Hz、深度可调（0–12 dB，默认 3）。**只改频响，不编造内容**（与带宽扩展性质不同）。中心取 3000 而非 4000 Hz 是实测结论：真实素材上 3000 Hz 把发闷指数改善了 7.21 dB，4000 Hz 只有 5.54 dB。 |
-| **听感增强：温和压缩（AGC）** | 把语音段的动态范围压小，小声的部分听得更清。实测语音段动态范围 6.0 → 4.4 dB，最大衰减 5.78 dB，增益跳变 0.68 dB/帧（无抽吸感）。 |
-| **去闷（200–500 Hz）** | 在 350 Hz 附近做**钟形**衰减（0 到 −12 dB，默认 0 = 关闭），压掉「发闷」的堆积。用钟形而不是搁架，是为了不动 100 Hz 以下的基频——否则声音会变薄。参数由真实素材实测标定，见下文「真实素材诊断」。 |
-| **输出视频** | **逐文件决定、默认关、绝不继承上一个文件**。勾选后输出视频：**画面与其它流原样复制、不重新编码**（画质零损失、耗时接近磁盘拷贝），只把音轨换成增强后的音频，按源容器选编码器（mp4→aac、mkv→aac、webm→libopus…）。输入文件**绝不会被改写**。运行**之前**就能在两处看到这次会输出什么：参数区的「本次输出：…」提示行，以及日志里的 `输出模式：… → <预测文件名>`。批处理里按**每个文件自己的容器**判定，并逐条列出（不会把"当前正在看的文件"的设置套给整批）。 |
-| **运行日志落盘** | 界面日志同时追加到 `<项目>/out/run.log`（超 2 MB 轮转一份）。理由：用 pythonw 启动没有控制台，`txt_log` 关窗即失——曾经因此丢掉一次 734.72 s 运行的完整分阶段拆解。 |
+| **Denoise strength** (0–30, default 12) | Applies to DPDFNet only and maps to the model's `attenuation_limit_db` = **the maximum attenuation allowed**. **`0` is a special case: it means "no limit" (the harshest), not "no denoising"** — measured on pure white-noise input, `0` yields **69.3 dB** of attenuation, harsher than `60`; the other values are literal limits: measured, `3/6/12/18/30` yield 3.0 / 6.0 / 12.0 / 18.0 / 30.0 dB of attenuation. Another trap: **DeepFilterNet3 uses the opposite convention for the same parameter** (`-a`, 0 = no denoising, 100 = no limit), and the interface labels them separately. This document earlier wrote "0 dB ≈ no denoising", **which is backwards and has been corrected**. |
+| **Trim leading/trailing silence** | Trims the silent stretch at the beginning/end against an adaptive threshold. The threshold is "high quantile of the frame level − 40 dB", clamped above −75 dBFS, so it adapts to material whose overall level is low instead of applying a fixed absolute value. **Silence in the middle is kept by default** (removing it would change the timeline). |
+| **Gain normalisation** | When checked, the target level applies to the **output**. Internally it happens twice: levels are conditioned before the audio goes into the engine (which is more stable for low-level material), and re-corrected to the target after the engine, honouring the "output reaches the target level" contract. |
+| **Keep stereo** | On by default. The enhancement models are all trained on mono, but applying the same model to the left and right channels separately is standard practice and preserves the stereo image. Turning it off downmixes to mono. |
+| **Thread count** | The number of internal threads passed to the engine (default 2). **Measured: more is not faster** — 1 and 2 are equivalent, and from 4 threads on it is 7–29% slower (see "Performance and resource measurements" below). This parameter does not affect the result, only the speed, so it does not enter the fingerprint. |
+| **Output format** | WAV 24-bit (default) / FLAC 24-bit / MP3. |
+| **Write the result automatically when done** | On by default. The result is written according to the naming convention into the `AudioEnhancer_zk21/` subfolder **of the directory containing the input file** (no longer into the project's `out/`), carrying a parameter fingerprint for "reuse with the same parameters". When off, the result stays in memory only and you use "Export as…" in the toolbar when you need it on disk. |
+| **High-pass (0 = off)** | A pre-processing stage shared by all engines, 80 Hz by default. It filters out DC and low-frequency rumble, and the DSP baseline has an equivalent step. |
+| **Perceptual enhancement: high shelf** | A shelf boost lifts the "clarity" region at 2–5 kHz, with a fixed centre of 3000 Hz and an adjustable depth (0–12 dB, default 3). It **only changes the frequency response and invents no content** (unlike bandwidth extension). The centre is 3000 rather than 4000 Hz because of measurement: on real material 3000 Hz improved the muffle index by 7.21 dB while 4000 Hz only gave 5.54 dB. |
+| **Perceptual enhancement: gentle compression (AGC)** | Narrows the dynamic range of speech, making quiet parts easier to hear. Measured: speech dynamic range 6.0 → 4.4 dB, maximum attenuation 5.78 dB, gain step 0.68 dB/frame (no pumping). |
+| **De-muffle (200–500 Hz)** | A **bell-shaped** cut around 350 Hz (0 to −12 dB, default 0 = off) that removes the "muffled" build-up. A bell rather than a shelf is used so that the fundamental below 100 Hz is untouched — otherwise the voice becomes thin. The parameters were calibrated by measurement on real material; see "Real-material diagnosis" below. |
+| **Output video** | **Decided per file, off by default, and never inherited from the previous file.** When checked, a video is output: **the picture and all other streams are copied as is, not re-encoded** (zero quality loss, close to the time of a disk copy), only the audio track is replaced by the enhanced audio, and the encoder is chosen from the source container (mp4→aac, mkv→aac, webm→libopus…). The input file is **never rewritten**. **Before** the run you can see in two places what will be output this time: the "This run outputs: …" hint line in the parameter area, and `output mode: … → <predicted filename>` in the log. In batch processing it is decided by **each file's own container**, listed one by one (the settings of "the file you are currently looking at" are not applied to the whole batch). |
+| **Write the run log to disk** | The interface log is also appended to `<project>/out/run.log` (rotated once past 2 MB). The reason: started with pythonw there is no console, and `txt_log` is lost as soon as the window closes — which once lost the complete stage-by-stage breakdown of a 734.72 s run. |
 
 ---
 
-## 处理流程
+## Processing flow
 
 ```
-导入（音频文件 或 视频容器）
-  → 探测：判定 kind、枚举音轨、读取参数
-  → 解码为 float32（视频只取音轨）
-     → [可选] 裁剪首尾静音
-     → [可选] 增益归一化（输入调理）
-     → [可选] 高通（默认 80 Hz）
-     → 逐声道增强（模型吃单声道；**声道可并行**，见「声道并行」）
-     → [可选] 带宽扩展（生成式，会改写高频）
-     → [可选] 听感增强：搁架 EQ → 温和压缩
-     → 重采样到目标采样率
-     → 与源对齐长度 → [可选] 输出电平归一化
-  → 算出参数指纹 → 命中同名文件则直接复用（不重算）
-  → 按命名规范写出 → 登记 manifest（含分阶段耗时，供事后诊断）
+Import (audio file or video container)
+  → probe: determine kind, enumerate tracks, read parameters
+  → decode to float32 (video: audio track only)
+     → [optional] trim leading/trailing silence
+     → [optional] gain normalisation (input conditioning)
+     → [optional] high-pass (default 80 Hz)
+     → per-channel enhancement (the models take mono; **channels may run in parallel**, see "Channel parallelism")
+     → [optional] bandwidth extension (generative, rewrites high frequencies)
+     → [optional] perceptual enhancement: shelf EQ → gentle compression
+     → resample to the target sample rate
+     → align to the source length → [optional] output level normalisation
+  → compute the parameter fingerprint → if a file with the same name exists, reuse it directly (no recompute)
+  → write out per the naming convention → record the manifest (including stage timings, for later diagnosis)
 ```
 
-阶段名会记进日志与结果（形如 `highpass · normalize-pre · denoise · bwe:novasr · shelf · compress`），便于确认某一档到底有没有真的生效。**去混响不在其中**——它被流水线硬拒绝，理由见「已知限制」。
+Stage names are recorded in the log and in the result (of the form `highpass · normalize-pre · denoise · bwe:novasr · shelf · compress`), making it easy to confirm whether a given option really took effect. **Dereverberation is not among them** — the pipeline rejects it outright, see "Known limitations".
 
-**长度对齐**：sherpa-onnx 的离线接口输出比输入短约一个 hop（帧对齐截断），DeepFilterNet 因延迟补偿会丢末尾约 30 ms。两者都用源信号尾部按能量比补齐，保证 A/B 严格对齐。
+**Length alignment**: sherpa-onnx's offline interface outputs about one hop less than its input (frame-alignment truncation), and DeepFilterNet loses about 30 ms at the end because of its latency compensation. Both are padded from the tail of the source signal by an energy ratio, so that the A/B is strictly aligned.
 
-对齐的判据是**时长**，不是样本数。这一点曾经写错，后果很严重：带宽扩展把 16 kHz 提到 48 kHz 时**样本数变 3 倍而时长不变**，按样本数比较就会把 48 kHz 的扩展结果截成 **1/3 时长**，而且是**静默**发生的（后续断言只看频段内容、不看时长）。现在 `align_to` 按时长换算目标样本数，并配了三道守卫：
+The alignment criterion is **duration**, not sample count. This was once written wrong and the consequence was severe: when bandwidth extension takes 16 kHz up to 48 kHz the **sample count becomes 3× while the duration is unchanged**, so comparing sample counts truncates the 48 kHz extended result to **1/3 of its duration**, and that happened **silently** (the assertions downstream only looked at band content, never at duration). `align_to` now converts the target sample count from the duration and comes with three guards:
 
-- 补尾量超过 1%（或 4800 帧）**抛错**——那说明上游出了实质缺陷，"用原音补尾"会把它掩盖成"后半段是原音"。
-- 输出比源长超过容差**抛错**，不再静默裁掉。
-- 逐声道合并时声道长度差超过 4800 帧**抛错**——声道之间长度不一致一定是缺陷，静默截断会写出「一路正常、一路坏」的文件。
+- A tail pad exceeding 1% (or 4800 frames) **raises an error** — that means the upstream stage has a substantive defect, and "pad the tail with the original" would hide it as "the second half is the original".
+- An output that exceeds the source length beyond tolerance **raises an error** instead of being silently truncated.
+- When merging per channel, a channel length difference above 4800 frames **raises an error** — inconsistent lengths between channels are always a defect, and silent truncation would write a file with "one channel fine, one channel broken".
 
-容差取 4800 帧（48 kHz 下 100 ms）是为了容得下模型固有的帧对齐截断（DeepFilterNet 约丢 30 ms = 1440 帧），同时远小于任何真实缺陷（那次是 1,000,000 帧量级）。
+The tolerance of 4800 frames (100 ms at 48 kHz) accommodates the model's inherent frame-alignment truncation (DeepFilterNet loses about 30 ms = 1440 frames) while remaining far below any real defect (that one was on the order of 1,000,000 frames).
 
-**分阶段耗时会记进日志**：形如 `解码 12.3s · 降噪推理 300.4s · 带宽扩展 41.0s · …`。它回答了"瓶颈在推理、还是在解码 / 重采样 / 写盘"——在此之前只有总耗时，无法判断。注意 `耗时` 与 `RTF` 沿用旧口径、**不含写出**，写盘时间单列在「写出」一格。要复现这组数字用 `tools/measure_stages.py`。
+**Stage timings are logged**: of the form `decode 12.3s · denoise inference 300.4s · bandwidth extension 41.0s · …`. This answers "is the bottleneck inference, or decoding / resampling / writing to disk" — before it, only the total time was available and nothing could be decided. Note that `elapsed` and `RTF` keep the old accounting and **exclude writing**, which is listed separately in its own "write" cell. To reproduce these numbers use `tools/measure_stages.py`.
 
-**响度匹配不写进输出**：A/B 的增益补偿只发生在监听侧（见上文「增益匹配」）。
+**Loudness matching is not written into the output**: the A/B gain compensation happens on the monitoring side only (see "Gain matching" above).
 
-**复用分支不做重采样**：指纹只编码「输入 + 会影响结果的参数」，所以同指纹的文件**本身就是**本次要产出的东西，直接按它自身的采样率取用。这一点曾经是 bug：复用发生在带宽扩展阶段之前，那时目标采样率还是源采样率，按它重采样会把已写出的 48 kHz 带宽扩展结果降回 16 kHz（等于白做，而且这个偏差会被一直复用下去）。
+**The reuse branch does not resample**: the fingerprint only encodes "the input + the parameters that affect the result", so a file with the same fingerprint **is itself** what this run would produce, and it is used at its own sample rate. This was once a bug: reuse happened before the bandwidth-extension stage, when the target sample rate was still the source rate, so resampling by it took an already-written 48 kHz bandwidth-extended result back down to 16 kHz (the work was undone, and that deviation would be reused forever).
 
 ---
 
-## 处理链缺陷修复记录与指纹版本
+## Processing-chain defect history and fingerprint versions
 
-### 四个叠加缺陷（2026-09-21 修复）
+### Four stacked defects (fixed 2026-09-21)
 
-用户报告：「试听用（增强）」预设的立体声结果**听感基本只剩高频，且两个声道中有一个是坏的**。用保留的坏产物实测：整片 +5 kHz 以上占 99.8%、谱质心 18,600 Hz，两声道前 30 秒相关性只有 0.12。
+What the user reported: the stereo result of the "For audition (enhanced)" preset **sounds like nothing but high frequencies, and one of the two channels is broken**. Measured on the retained bad artefact: 99.8% of the whole file was above +5 kHz, the spectral centroid was 18,600 Hz, and the correlation between the two channels over the first 30 s was only 0.12.
 
-这四个缺陷是**叠加**的，且互相掩盖——单独看任何一个都不足以解释现象：
+These four defects were **stacked** and masked each other — looking at any one of them alone was not enough to explain the symptom:
 
-| # | 缺陷 | 单独后果 | 为什么长期没被发现 |
+| # | Defect | Consequence on its own | Why it went unnoticed for so long |
 | --- | --- | --- | --- |
-| ① | 带宽扩展的声道循环把**上一声道的输出率**当成了**下一声道的输入率** | 第二路被误重采样（频谱上移 3 倍、长度变 1/3） | 第一路永远正确，所以表现为「一路正常一路坏」，**不报错** |
-| ② | 引擎**上报的输出采样率不可信** | 下游带宽扩展拿了错的率——是①的上游根源 | 早先按「输出率 = 模型原生率」这个**未验证的推断**办事，把它当成了事实（复核时确认：本文其实从未写过这句，错的是那次推断本身） |
-| ③ | `align_to` 按**样本数**而非**时长**对齐 | 48 kHz 的扩展输出被截成 **1/3 时长**（静默数据丢失） | 带宽扩展的断言只看频段内容、不看时长 |
-| ④ | 三个带宽扩展引擎**生成频段电平失控** | 听感「只剩高频」（LavaSR 在 12–20 kHz 高 +89 dB，且它自己已削顶） | 用「频段占比」判断会**读反**——见下节 |
+| ① | The bandwidth-extension channel loop used the **previous channel's output rate** as the **next channel's input rate** | The second path was resampled by mistake (spectrum shifted up 3×, length 1/3) | The first path is always correct, so it showed up as "one channel fine, one channel broken", **with no error** |
+| ② | The engine's **reported output sample rate was not trustworthy** | Downstream bandwidth extension took the wrong rate — the upstream root cause of ① | It was previously handled by an **unverified inference** that "output rate = model native rate", treated as fact (on review: this document never actually said that; the inference itself was what was wrong) |
+| ③ | `align_to` aligned by **sample count** rather than **duration** | The 48 kHz extended output was truncated to **1/3 of its duration** (silent data loss) | The bandwidth-extension assertions only looked at band content, never at duration |
+| ④ | The three bandwidth-extension engines had **uncontrolled level in the generated band** | It sounded like "only high frequencies" (LavaSR at 12–20 kHz was +89 dB higher, and it had already clipped itself) | Judging by "band share" **reads it backwards** — see the next section |
 
-**缺陷②的实测证据**：sherpa 的 DPDFNet 喂 48 kHz 输入时**上报 16000 Hz，却返回与输入相同样本数**的 48 kHz 数据——灌 1 kHz 正弦进去，按 48 kHz 回读仍是 1000.1 Hz，长度比 1.0000。所以「输出率 = 模型原生率」是**错的**，现在改为用**长度比**推断真实输出率（仅在推导值与上报值相差超过 2% 时才覆盖上报值；不能无条件用推导值，因为扩展输出的样本数不是精确整数倍，四舍五入会把 48000 变成 47998）。
+**Measured evidence for defect ②**: when fed 48 kHz input, sherpa's DPDFNet **reports 16000 Hz but returns 48 kHz data with the same sample count as the input** — feed in a 1 kHz sine and reading it back at 48 kHz still gives 1000.1 Hz, with a length ratio of 1.0000. So "output rate = model native rate" is **wrong**, and the real output rate is now inferred from the **length ratio** (the reported value is only overridden when the derived value differs from it by more than 2%; the derived value cannot be used unconditionally, because the extended output's sample count is not an exact integer multiple and rounding turns 48000 into 47998).
 
-**修复后真实素材复验（实测）**：长度 480,000 → 480,000 帧；**两声道最大逐样本差 = 0.000e+00**（修复前前 30 秒相关性仅 0.12）；时长 2.398s@16000 → **2.398s@48000**（带宽扩展只改采样率、不改时长）；生成频段相对通带 NovaSR **−12.0 dB**（修复前 +13.7/+24.2 dB）；通带（20–8 kHz）响度 40.0 → **40.0**（低频原样保留）。
+**Re-verification on real material after the fix (measured)**: length 480,000 → 480,000 frames; **maximum per-sample difference between the two channels = 0.000e+00** (before the fix the first-30-s correlation was only 0.12); duration 2.398s@16000 → **2.398s@48000** (bandwidth extension changes only the sample rate, not the duration); the generated band is **−12.0 dB** relative to the passband with NovaSR (before the fix: +13.7/+24.2 dB); passband (20–8 kHz) loudness 40.0 → **40.0** (the low frequencies are preserved exactly).
 
-**新增回归覆盖**：`tests/check_enhance.py` 加了「立体声 + 带宽扩展」一节，用三条不变式守住——同内容双声道输入 → 输出两声道**逐样本一致**、**时长不变**、**生成频段低于通带**。这条组合此前 14 个测试套件**全都没覆盖**，正是缺陷能上线的直接原因。
+**New regression coverage**: `tests/check_enhance.py` gained a "stereo + bandwidth extension" section holding the line with three invariants — identical content in both input channels → the two output channels are **identical sample by sample**, **the duration is unchanged**, and **the generated band is below the passband**. This combination had **no coverage at all** among the previous 14 test suites, which is the direct reason the defect could ship.
 
-### 第五个缺陷：平衡规则在"模型没补什么"时会反过来巨额放大（2026-09-21 修复）
+### The fifth defect: the balance rule amplifies enormously when "the model added nothing" (fixed 2026-09-21)
 
-**用户报告**：「试听用（增强）」的输出"在高频段有异常噪声，像是在原本的音频上叠了一个高频嗡嗡声"。
+**What the user reported**: the output of "For audition (enhanced)" "has abnormal noise in the high band, like a high-frequency hum laid on top of the original audio".
 
-**诊断过程**（每一步都留了可复现的数字，工具是 `tools/hf_artifact_probe.py`）：
+**Diagnosis** (every step left reproducible numbers; the tool is `tools/hf_artifact_probe.py`):
 
-1. **不是离散啸叫**。输出里确实有一条 16002 Hz 的线，但绝对电平只有 **−83.6 dBFS**（比通带低 50 dB），而且**停顿段几乎是数字静音**（HF 比通带低 151 dB）——按绝对电平听不见。
-2. **不是"上采样成像"**。一开始我用"生成频段与通带按 16 kHz 镜像后的相关性"看到 r=0.87，几乎要下这个结论；改用**平坦度判据**（镜像副本应当只差一个常数增益）后否证：通带自身对照的离散度只有 0.35 dB，而镜像关系的离散度是 **12.2 dB**。**相关高只是因为两条谱的整体倾斜相似，不代表是副本。**
-3. **不是 GPU 造成的**。同一输入在 CPU / CUDA 上的高频电平差 0.2 dB，差信号 −60 dBFS 且不含任何谱线。也**不是喂错采样率**：给模型喂 48 kHz 与喂 16 kHz 的原始输出**逐带一致**（audiosronnx 自己会重采样到模型的 16 kHz）。
-4. **真因在平衡规则**。模型的**原始**输出在 9–16 kHz 比通带低约 42–55 dB（它确实几乎没补什么），而规则要求"生成频段 = 通带 × 10^(−12/10)"，于是算出 **g_hf = +31.56 dB**。把这个宽带本底整体抬 31.6 dB 之后，1 kHz 细带在 **13–14 kHz 达到峰值（只比通带低 16.5 dB）**、形状随频率上升，而源素材在 9 kHz 以上是 −85 dB 的硬悬崖——这就是听到的那层嗡嗡声。
+1. **It is not a discrete whistle.** There really is a line at 16002 Hz in the output, but its absolute level is only **−83.6 dBFS** (50 dB below the passband), and **the pauses are almost digital silence** (HF 151 dB below the passband) — inaudible at that absolute level.
+2. **It is not "upsampling imaging".** At first I looked at "the correlation between the generated band and the passband mirrored around 16 kHz" and saw r=0.87, and was about to conclude exactly that; switching to a **flatness criterion** (a mirrored copy should differ only by a constant gain) disproved it: the passband's own dispersion is only 0.35 dB, whereas the mirror relationship's dispersion is **12.2 dB**. **A high correlation only means the overall tilt of the two spectra is similar; it does not mean one is a copy.**
+3. **It is not caused by the GPU.** The same input on CPU versus CUDA differs by 0.2 dB in the high band, with the difference signal at −60 dBFS and containing no spectral lines. Nor is it **the wrong sample rate being fed in**: feeding the model 48 kHz and feeding it 16 kHz give **identical per-band raw output** (audiosronnx resamples to the model's 16 kHz itself).
+4. **The real cause is the balance rule.** The model's **raw** output is about 42–55 dB below the passband at 9–16 kHz (it really does add almost nothing), while the rule demands "generated band = passband × 10^(−12/10)", so it computes **g_hf = +31.56 dB**. After lifting that broadband noise floor by 31.6 dB overall, the 1 kHz fine band **peaks at 13–14 kHz (only 16.5 dB below the passband)** and the shape rises with frequency, while the source material has a hard −85 dB cliff above 9 kHz — that is the hum that was heard.
 
-**修复**：`balance_gains` 里给生成频段加**放大上限**（`MAX_HF_BOOST_DB = 0.0`）——**只许压、不许抬**。模型产得多就压到目标（原缺陷④的修复不受影响，实测 lavasr 仍被从 +16.2 dB 压到 −10.8 dB），产得少就诚实地少加。
+**The fix**: `balance_gains` now applies **a boost ceiling** to the generated band (`MAX_HF_BOOST_DB = 0.0`) — **it may only be pushed down, never up**. If the model produces too much it is pushed down to the target (the fix for defect ④ above is unaffected; measured, lavasr is still pushed from +16.2 dB down to −10.8 dB), and if it produces too little then it is honestly given less.
 
-**修复后实测**（同一条链 `deepfilternet3 + NovaSR`，30 s 片段，相对通带）：
+**Measured after the fix** (same chain, `deepfilternet3 + NovaSR`, 30 s excerpt, relative to the passband):
 
-| 频带 | 修复前 | 修复后 | 纯降噪（无 BWE） |
+| Band | Before the fix | After the fix | Denoising only (no BWE) |
 | --- | --- | --- | --- |
 | 7–8 kHz | −39.3 dB | −58.5 dB | −56.5 dB |
 | 8–9 kHz | −31.2 dB | −61.5 dB | −69.5 dB |
-| **13–14 kHz（原来的峰值）** | **−16.5 dB** | **−48.8 dB** | −85.1 dB |
+| **13–14 kHz (the former peak)** | **−16.5 dB** | **−48.8 dB** | −85.1 dB |
 
-8 kHz 交叉点的台阶也从 **+8.1 dB** 变成 **−3.0 dB**（自然缓降）。护栏本身由 `tests/check_enhance.py` 的 4c 节用**合成信号**钉住（不依赖具体素材）：模型几乎不产高频时增益不得 > 1，模型过量时必须衰减且平衡后落到通带之下。
+The step at the 8 kHz crossover also went from **+8.1 dB** to **−3.0 dB** (a natural gentle roll-off). The guard itself is pinned by section 4c of `tests/check_enhance.py` using **synthetic signals** (so it does not depend on particular material): when the model produces almost no high frequencies the gain must not be > 1, and when the model produces too much it must be attenuated and land below the passband after balancing.
 
-**一条方法论教训**：`balance_gains` 的"绝对电平目标"不带方向性——**目标值必须配方向护栏**，否则它会在"模型很安静"的输入上变成放大器。这与本文另一条教训（判断低频是否被删必须用绝对能量、不能用占比）同属"规则本身可能读反"这一类。
+**One methodological lesson**: the "absolute level target" of `balance_gains` carries no direction — **a target value must be paired with a directional guard**, or it becomes an amplifier on input where "the model is very quiet". This belongs to the same class as another lesson in this document (deciding whether low frequencies were removed requires absolute energy, not shares): "the rule itself may read backwards".
 
-### `CHAIN_VERSION`：为什么指纹里必须有「代码版本」
+### `CHAIN_VERSION`: why a "code version" must be in the fingerprint
 
-结果指纹（`core/outputs.py` 的 `spec_dict`）**刻意排除**了线程数、并行 worker 数、输出目录、界面状态——它们不改变结果，纳入会导致"拖一下线程数就要整段重算"。
+The result fingerprint (`spec_dict` in `core/outputs.py`) **deliberately excludes** the thread count, the number of parallel workers, the output directory and the interface state — they do not change the result, and including them would mean "nudging the thread count forces a full recompute".
 
-但**处理链的语义版本必须纳入**：指纹只看参数，**看不见代码缺陷**。修掉一个会改变结果的处理缺陷后，若不递增 `CHAIN_VERSION`，应用会直接复用**已经算错的那份缓存**——实测发生过（缺陷①修好后，旧的坏文件仍会被判定为"同参数可复用"）。
+But **the semantic version of the processing chain has to be included**: a fingerprint only sees parameters and is **blind to code defects**. After fixing a processing defect that changes results, if `CHAIN_VERSION` is not bumped the application will happily reuse **the cache that was computed wrongly** — measured, this happened (after defect ① was fixed, the old bad file was still judged "reusable with the same parameters").
 
-规则：**任何会改变处理结果的代码修改，都要递增 `core/outputs.py` 里的 `CHAIN_VERSION`**。它进指纹后，旧产物的文件名与新指纹不再匹配，于是自动重算。
+The rule: **any code change that alters the processing result must bump `CHAIN_VERSION` in `core/outputs.py`**. Once it is in the fingerprint, the old artefacts' filenames no longer match the new fingerprint and they are recomputed automatically.
 
-- 复用判据是**文件名里的指纹**，不读 `manifest.json`，所以 manifest 被删也不影响。
-- 因此**回退版本时要注意**：`CHAIN_VERSION` 回到旧值，指纹也就回到旧值，旧产物会重新被复用。要彻底回到旧行为，需连同输出目录里的产物一起清掉（只清 `manifest.json` 没有用——它不参与复用判定）。
+- The reuse criterion is **the fingerprint in the filename**, not `manifest.json`, so deleting the manifest does not matter.
+- Therefore **be careful when rolling back a version**: `CHAIN_VERSION` returns to its old value, the fingerprint returns to its old value, and old artefacts become reusable again. To fully return to the old behaviour you must clear the artefacts in the output directory as well (clearing only `manifest.json` does nothing — it does not participate in the reuse decision).
 
-### 测量口径：判断「低频有没有被删」必须用**绝对**能量
+### Measurement discipline: deciding "were the low frequencies removed" requires **absolute** energy
 
-这是本轮踩过的坑，值得单独记住：**不能用「频段占比」判断低频是否被删。**
+This is a pitfall from this round, worth remembering on its own: **you cannot use "band share" to decide whether low frequencies were removed.**
 
-「全高频」现象的本质是**混音增益失衡**——低频其实**保住了**（0–5 kHz 三个引擎的绝对功率都是 ≈0 dB），是生成频段被抬得离谱。但生成频段一高，低频的**相对占比**就被压到 1%，看上去像"低频被删了"。第一轮判断用占比得出"低频被删"，**是错的**；改用绝对值（输出各频段功率 ÷ 输入同频段功率）才定案。
+The essence of the "all high frequencies" symptom is a **mix-gain imbalance** — the low frequencies were in fact **preserved** (the absolute power of all three engines below 0–5 kHz is about 0 dB); it was the generated band that had been lifted absurdly high. But once the generated band is high, the low frequencies' **relative share** is squeezed to 1%, which looks like "the low frequencies were removed". The first round's judgement of "low frequencies removed" based on share was **wrong**; only switching to absolute values (output power per band ÷ input power in the same band) settled it.
 
-正确做法：**绝对**频段功率比，或与「同一套参数但不做带宽扩展」的输出对照（把带宽扩展的影响单独分离出来）。
-
----
-
-## 批量处理与变体
-
-### 待处理文件与批处理
-
-- `添加…` 或把多个文件一起拖进窗口，就能一次加入一批文件；清单支持**多选**（Ctrl / Shift 点选）。
-- 勾选若干条后按 `批量处理 N 个文件`；**一条都没勾就处理整张列表**。未勾选时按钮上的数字就是整张列表的长度。
-- **并发数按可用内存收敛，不按 CPU 核数**（本机 20 线程但空闲内存常年只有 3–4 GB，而单个降噪实例约 200–500 MB、带宽扩展模型 400–700 MB）：
-  - 空闲内存 ≥ 1.5 GB：按请求的并发（界面固定为 2）
-  - 空闲内存 < 1.5 GB：自动降到 1 个并发，并在日志里说明
-  - 空闲内存 < 0.8 GB：**直接拒绝启动**，日志里给出原因。**只报告占用，绝不删除任何文件。**
-- 单个文件失败被隔离（内存不足、解码失败等），不会带崩整批；日志按 `[序号/总数]` 逐条记录成功、失败与「复用」。
-- 取消是**协作式**的：已在处理的文件会尽快收尾，不会硬杀。
-- 批处理的每个文件各自解析**默认音轨**——批处理不共用界面上选的音轨，因为一批文件里的音轨布局未必相同。
-
-### 输出位置与命名
-
-- 结果写到**输入文件所在目录**的 `AudioEnhancer_zk21/` 子文件夹，不再写进项目 `out/`。若那个位置不可创建或不可写，会**回退到项目 `out/`** 并在日志里说明原因。
-- 文件名形如 `<源文件名>__<链路标签>__<指纹><ext>`，指纹只编码「输入 + 会影响结果的参数」。
-- 同参数第二次处理会**直接复用已有文件**（不重算），日志里写明「复用」。
-- 判据是**文件名里的指纹**，不依赖 manifest，所以 manifest 被删也不影响复用与发现。
-- 变体列表的指标（采样率、RTF）来自同目录的 `manifest.json`；manifest 缺失时仍能从文件名反解出列表，只是没有指标（界面会标注「无清单信息」）。
-
-### 变体试听
-
-- 「已有结果」列表**来自磁盘**，因此「多选批量跑过」和「先后单跑」产生的变体同样能被发现，**重启软件后也依然在**。
-- 选中一条即与原音 A/B。变体是**裁剪后**的音频（从裁剪点开始），所以原音会按该变体记录的裁剪区间切成同一段——否则会整段错位（裁掉 2 秒前导静音就错位 2 秒）。
-- 试听中的变体可以「导出为…」：此时导出的是**你正在听的变体**，而不是最近一次处理的结果。
-- 这两条路径的行为由 `tests/check_variants.py` 端到端覆盖（含「全新进程仍能发现同一批变体」）。
+The right approach: the **absolute** per-band power ratio, or a comparison against "the same parameters without bandwidth extension" (isolating the effect of bandwidth extension on its own).
 
 ---
 
-## 带宽扩展与听感增强
+## Batch processing and variants
 
-### 三条能力要分清性质
+### Files to process and batch processing
 
-| 能力 | 性质 | 会不会编造内容 | 默认 |
+- `Add…`, or dragging several files into the window at once, lets you add a batch of files; the list supports **multi-select** (Ctrl / Shift click).
+- Check some rows and press `Batch-process N files`; **with nothing checked the whole list is processed**. When nothing is checked the number on the button is the length of the whole list.
+- **Concurrency converges on available memory, not on CPU core count** (this machine has 20 threads but only 3–4 GB free memory all year round, while a single denoising instance takes about 200–500 MB and a bandwidth-extension model 400–700 MB):
+  - free memory ≥ 1.5 GB: the requested concurrency (fixed at 2 in the interface)
+  - free memory < 1.5 GB: automatically drops to 1 concurrent job, and says so in the log
+  - free memory < 0.8 GB: **refuses to start outright**, with the reason in the log. **It only reports usage; it never deletes any file.**
+- A single file's failure is isolated (out of memory, decode failure, etc.) and does not take down the whole batch; the log records success, failure and "reuse" per item as `[index/total]`.
+- Cancellation is **cooperative**: files already being processed are wound up as quickly as possible and are not killed hard.
+- Each file in a batch resolves its own **default audio track** — a batch does not share the track selected in the interface, because the track layouts within one batch need not be the same.
+
+### Output location and naming
+
+- Results are written into the `AudioEnhancer_zk21/` subfolder **of the directory containing the input file**, no longer into the project's `out/`. If that location cannot be created or written, it **falls back to the project's `out/`** and explains why in the log.
+- Filenames look like `<source filename>__<chain label>__<fingerprint><ext>`, and the fingerprint only encodes "the input + the parameters that affect the result".
+- Processing the same parameters a second time **reuses the existing file directly** (no recompute) and says "reuse" in the log.
+- The criterion is **the fingerprint in the filename**; it does not depend on the manifest, so deleting the manifest affects neither reuse nor discovery.
+- The metrics in the variant list (sample rate, RTF) come from the `manifest.json` in the same directory; when the manifest is missing the list can still be recovered from the filenames, just without metrics (the interface marks it "no manifest information").
+
+### Variant audition
+
+- The "Existing results" list **comes from disk**, so variants produced by "a multi-selected batch run" and by "one-at-a-time runs" are discovered equally, and they **are still there after restarting the app**.
+- Selecting one gives an A/B against the original. A variant is **trimmed** audio (it starts at the trim point), so the original is cut to the same stretch using the trim range recorded with that variant — otherwise everything would be misaligned by the whole trim (cut 2 s of leading silence and you are 2 s out).
+- A variant being auditioned can be "Export as…": what you export is then **the variant you are listening to**, not the most recent processing result.
+- The behaviour of these two paths is covered end-to-end by `tests/check_variants.py` (including "a brand-new process still discovers the same set of variants").
+
+---
+
+## Bandwidth extension and perceptual enhancement
+
+### Three capabilities, three different natures
+
+| Capability | Nature | Does it invent content | Default |
 | --- | --- | --- | --- |
-| 高通 / 裁剪 / 归一化 | 前处理与电平 | 不会 | 高通开；裁剪、归一化按需 |
-| 搁架 EQ / 压缩 | 修饰（只改频响与动态） | 不会 | 关 |
-| **带宽扩展** | **生成**（推断出高频） | **会** | **关** |
+| High-pass / trimming / normalisation | Pre-processing and level | No | high-pass on; trimming and normalisation as needed |
+| Shelf EQ / compression | Cosmetics (changes only frequency response and dynamics) | No | off |
+| **Bandwidth extension** | **Generative** (infers high frequencies) | **Yes** | **off** |
 
-### 带宽扩展为什么要默认关、并且要标注风险
+### Why bandwidth extension is off by default and flagged as a risk
 
-它是生成式模型：输入只有 16 kHz 能表达的信息，8 kHz 以上的内容是**推断出来**的，不是录到的。这对试听是好事（听着更「透」），对**识别 / 取证是坏事**——模型编出来的高频会污染声学特征，而下游系统可能把这些编造的成分当成真实证据。
+It is a generative model: the input only carries information expressible up to 16 kHz, and the content above 8 kHz is **inferred**, not recorded. For auditioning that is a good thing (it sounds more "open"), but for **recognition / forensics it is a bad thing** — the high frequencies the model invents pollute the acoustic features, and a downstream system may take those fabricated components for real evidence.
 
-实测支持这个判断：三个引擎的**原始**输出在 8 kHz 以上的能量相对通带高出 +13.7 / +26.2 / +71.1 dB（12–20 kHz 更高），而**低频保留得都很好**（5 kHz 以下与「仅降噪」的相关性 0.999–1.000），说明它们确实在补高频而不是整体染色。但补出来的东西无法与真实高频区分。（管线会把这段生成频段压到通带之下 12 dB，见上文「带宽扩展」表后的说明；上面这些数字是引擎的原始输出。）
+Measurements support that judgement: the **raw** output of the three engines is +13.7 / +26.2 / +71.1 dB above the passband in energy above 8 kHz (even more at 12–20 kHz), while **the low frequencies are all preserved very well** (correlation with "denoise only" below 5 kHz is 0.999–1.000), which shows they really are adding high frequencies rather than tinting everything. But what they add cannot be distinguished from genuine high frequencies. (The pipeline pushes that generated band to 12 dB below the passband, see the note after the "Bandwidth extension" table above; the numbers here are the engines' raw output.)
 
-**因此：带宽扩展只在「试听用（增强）」预设里开启，`models.json` 的说明里也逐条写明「会编造高频内容，仅用于试听，不要用于识别」，界面上另有一行常驻警告。** 识别与取证请用「识别用（保真）」。
+**Therefore: bandwidth extension is enabled only in the "For audition (enhanced)" preset, the descriptions in `models.json` state item by item that it "invents high-frequency content, for auditioning only, do not use it for recognition", and the interface carries a permanent extra warning line.** For recognition and forensics, use "For recognition (faithful)".
 
-（关于生成式带宽扩展对下游任务的**定量**影响，本轮没有做识别率对比实验，所以这里只给机制与该引擎的实测频谱数字，不给「会影响多少 WER」之类的具体结论。需要定量依据请以该领域自己的评测为准。）
+(As for the **quantitative** effect of generative bandwidth extension on downstream tasks: no recognition-rate comparison experiment was run this round, so only the mechanism and the engine's measured spectral numbers are given here, not statements like "it will affect WER by such and such". For quantitative grounds, rely on the evaluations of that field itself.)
 
-### 去混响为什么不提供
+### Why dereverberation is not offered
 
-实现过（单通道 WPE），**实测无效**，所以流水线里**硬拒绝**——`PipelineOptions.dereverb_enabled=True` 会直接抛 `NotImplementedError`，界面上也就不提供这个开关：
+It was implemented (single-channel WPE), **measured ineffective**, so the pipeline **rejects it outright** — `PipelineOptions.dereverb_enabled=True` raises `NotImplementedError` directly, and the interface therefore offers no such switch:
 
-- 合成混响素材上，偏移后 100–400 ms 的尾部能量相对起始**升高 15.7 dB**（本应下降）
-- 输出与干声的样本级相关性 **−0.35**（负值 → 输出已与原始信号无关）
-- 衰减斜率反而变缓（90.8 → 68.4 dB/s）
+- On synthetic reverberant material, the energy of the tail 100–400 ms after the onset **rose by 15.7 dB** relative to the onset (it should have fallen)
+- The sample-level correlation between the output and the dry signal was **−0.35** (negative → the output is no longer related to the original signal)
+- The decay slope became gentler rather than steeper (90.8 → 68.4 dB/s)
 
-即实现无效且会产生垃圾音频。**宁可明确拒绝，也不给一个会毁掉素材的开关。** 实现与失败记录保留在 `core/wpe.py`。
+In other words the implementation was ineffective and produced garbage audio. **Better to refuse explicitly than to offer a switch that destroys material.** The implementation and its record of failure are kept in `core/wpe.py`.
 
-本轮只交付**混响检测指标**（衰减斜率，单位 dB/s）：干声实测 1222 dB/s，合成混响 51 dB/s，两者能清楚区分。
+This round delivers only the **reverb detection metric** (decay slope, in dB/s): measured 1222 dB/s on dry speech and 51 dB/s on synthetic reverb, and the two are clearly distinguishable.
 
-单通道 WPE 用 nara_wpe（MIT，成熟实现，573★）**重新验证过**：STFT/ISTFT 往返重构误差 2.2e-16（轴序正确），但四组参数（taps 10–30、delay 3、iterations 3–8）下衰减斜率只动不到 1.5 dB/s（53.3 → 54.6），发闷指数与谱质心几乎完全不变，唯一变化是峰值升高约 1.2 dB。**即成熟实现也基本不做事** —— 这与文献一致：WPE 的收益主要来自多通道的空间信息，单通道没有。所以这条路按证据关闭，不 vendor。
+Single-channel WPE was **re-verified using nara_wpe** (MIT, a mature implementation, 573★): the STFT/ISTFT round trip reconstructs with an error of 2.2e-16 (so the axis order is correct), but across four parameter sets (taps 10–30, delay 3, iterations 3–8) the decay slope moved by less than 1.5 dB/s (53.3 → 54.6), and the muffle index and spectral centroid were almost completely unchanged; the only change was a peak increase of about 1.2 dB. **So even a mature implementation does essentially nothing** — consistent with the literature: WPE's benefit comes mainly from multi-channel spatial information, which a single channel does not have. So this path is closed on the evidence, and it is not vendored.
 
-> ⚠ 更正：本文早先写过「DPDFNet 的训练信号模型含房间冲激响应，所以它本来就在压混响」。那是**未验证的推断被当成事实写了**。DPDFNet 论文的定位是 causal single-channel speech enhancement，**并未声称去混响**。实测也支持这个更正：降噪前后发闷指数几乎不变（+16.13 → +16.68）。
+> ⚠ Correction: this document earlier said "DPDFNet's training signal model includes room impulse responses, so it is already suppressing reverb". That was **an unverified inference written as fact**. The DPDFNet paper positions itself as causal single-channel speech enhancement and **makes no dereverberation claim**. Measurement supports the correction too: the muffle index barely changes before and after denoising (+16.13 → +16.68).
 
-若将来要重做单通道去混响，需要的是**改写数值实现之外的东西**——例如拿到多通道素材，或改用真正做去混响的神经模型（见「已知限制」里的调研结论）。
+If single-channel dereverberation is to be redone in the future, what is needed is **something other than a rewrite of the numerical implementation** — for example multi-channel material, or a neural model that genuinely performs dereverberation (see the survey conclusions in "Known limitations").
 
 ---
 
-## 真实素材诊断：结论与据此做的标定
+## Real-material diagnosis: conclusions and the calibration they drove
 
-对用户的两段真实录屏素材（mp4，48 kHz，18 分钟与 5.3 分钟）做了客观诊断，工具是
-`tools/diagnose_audio.py`（只读），报告落在 `.zcode/diagnosis/`。
+The user's two real screen recordings (mp4, 48 kHz, 18 minutes and 5.3 minutes) were diagnosed objectively with
+`tools/diagnose_audio.py` (read-only), with reports written to `.zcode/diagnosis/`.
 
-**实测结论**
+**Measured conclusions**
 
-| 发现 | 数据 | 含义 |
+| Finding | Data | Meaning |
 | --- | --- | --- |
-| **「发闷」被量化确认** | 语音帧上 200–500 Hz 占 39–45% 能量、比中频高 +2.8~+4.0 dB；2–5 kHz 只占约 1%、比中频低 **−11~−12 dB**；谱质心仅 347–384 Hz；−20 dB 边缘只有 105–785 Hz | 这不是比喻——「浑浊」就是低频堆积 + presence 区塌陷 |
-| **房间混响是真的** | 全带衰减 42/45 dB/s；**400–1000 Hz 带限复核** 45/50 dB/s（只快 3.5/5.7 dB/s） | 带限复核排除了「底噪把尾巴托住造成假湿」的可能。混响真实存在 |
-| **降噪不解决浑浊** | 同一素材降噪前后：衰减斜率 42→62 dB/s（清了尾巴），但**发闷指数 +16.13 → +16.68（略差）**、谱质心 384→367 Hz | 降噪与带宽扩展都不在这个病上 |
-| **高频缺失出在声学通路** | 5 kHz 以上 −31 dB；但**停顿段的底噪有丰富高频**而语音没有 | 若是软件/编码器带限，会连噪声一起切掉。所以是麦克风胶囊或**麦距**造成的 |
-| **音频实际是双单声道** | 立体声相关性 **1.0000** | 「保持立体声」对这类素材没有意义；也没有空间信息可供多通道去混响 |
+| **"Muffled" confirmed quantitatively** | On speech frames, 200–500 Hz holds 39–45% of the energy and is +2.8~+4.0 dB above the mid band; 2–5 kHz holds only about 1% and is **−11~−12 dB** below the mid band; the spectral centroid is only 347–384 Hz; the −20 dB edge is only 105–785 Hz | This is not a metaphor — "muddy" is exactly a low-frequency build-up plus a collapsed presence region |
+| **The room reverb is real** | Full-band decay 42/45 dB/s; **band-limited recheck at 400–1000 Hz** gives 45/50 dB/s (only 3.5/5.7 dB/s faster) | The band-limited recheck rules out the possibility that "the noise floor props up the tail and fakes wetness". The reverb is genuinely there |
+| **Denoising does not solve the muddiness** | Same material before and after denoising: the decay slope 42→62 dB/s (the tail is cleaned up), but the **muffle index +16.13 → +16.68 (slightly worse)** and the spectral centroid 384→367 Hz | Neither denoising nor bandwidth extension treats this illness |
+| **The missing high frequencies come from the acoustic path** | Above 5 kHz is −31 dB; but **the noise floor in the pauses is rich in high frequencies** while the speech is not | If it were a software or codec band limit, the noise would be cut off too. So it is the microphone capsule or the **microphone distance** |
+| **The audio is actually dual mono** | Stereo correlation **1.0000** | "Keep stereo" is meaningless for this kind of material; nor is there any spatial information for multi-channel dereverberation |
 
-**据此做的标定**：搁架中心 3000 Hz、去闷 −5 dB @ 350 Hz（宽 0.9 倍频程）。
-在真实素材上实测把发闷指数从 **+16.40 降到 +9.19 dB**（改善 7.21 dB）、谱质心 382 → 468 Hz、峰值 0.65 → 0.49（未削顶）。
+**The calibration that followed**: shelf centre 3000 Hz, de-muffle −5 dB @ 350 Hz (0.9 octave wide).
+Measured on the real material, this took the muffle index from **+16.40 down to +9.19 dB** (an improvement of 7.21 dB), the spectral centroid from 382 → 468 Hz, and the peak from 0.65 → 0.49 (no clipping).
 
-**单通道去混响已按证据关闭**：用 nara_wpe（MIT，成熟实现）重新验证，四组参数下衰减斜率只动不到 1.5 dB/s、发闷指数与谱质心几乎不变。详见「已知限制」里为何不提供去混响。
+**Single-channel dereverberation was closed on the evidence**: re-verified with nara_wpe (MIT, a mature implementation), across four parameter sets the decay slope moved by less than 1.5 dB/s and the muffle index and spectral centroid were almost unchanged. See "Known limitations" for why dereverberation is not offered.
 
-**这条最值得你注意**：诊断显示高频是在**声学通路**里丢的，而你把麦移近一点、或检查 Windows 的声音增强/通信模式设置，收益可能超过这里任何后处理。软件能做的只是在下游补偿上游损失。
-
----
-
-## 为什么不做「修复吐字不清」的模型
-
-如果"听不清"的成因是**咬字/发音本身**，那么**不存在能把含糊咬字修清楚的算法**。这不是"还没找到"，而是问法不同：
-
-- 学界把这类问题建模为**转换/重合成**，不是"修波形"。例如 dysarthric→healthy 的语音转换（RnV，`arXiv:2506.01618`，GPL-3.0）、用 SSL 恢复音素嵌入后扩散重合成（DiffDSR，`arXiv:2506.00350`，未发现公开代码）。它们的共同点是**改变音色甚至内容表征**，本质等于「重说一遍」，且需要 torch + WavLM/扩散模型。
-- 根本原因：发音层面丢失的是**可区分的声学对比**（塞音/擦音/元音之间的区别），不是被噪声掩蔽的分量。去噪能复原"被盖住"的成分，但没有任何前端算法能补出"没发出来"的区别。
-
-**还有一条方向性反证，值得单独记住**：用降噪去提升识别率，在现代 ASR 上系统性地帮倒忙。`arXiv:2512.17562`（2025-12，技术报告）用 MetricGAN+ 去噪、在 4 个现代 ASR（Whisper / NVIDIA Parakeet / Gemini Flash 2.0 / Parrotlet-a）× 9 种噪声 × 500 条语音上测得 **40/40 组配置去噪后识别都变差**，绝对恶化 1.1%–46.6%（semWER）。作者的结论是现代 ASR 自身已有噪声鲁棒性，而传统增强会移除 ASR 赖以判断的声学特征。
-（口径：技术报告 + 医疗语音 + MetricGAN+ 这一具体方法，不是万能律；但它与另一篇 `arXiv:1903.04567` 的机制解释一致——增强引入的失真与 ASR 训练分布不匹配，"人耳更清楚"不等于"机器更认得出"。）
-
-**唯一有正收益证据的方向在 ASR 侧，不在前端**：LoRA 微调 Whisper + Perceiver 说话人 prompt，在中文构音障碍语音上相对微调后的 Whisper **CER 再降 13.04%**（`arXiv:2406.09873`，Interspeech 2024）。代价是需要该说话人的数据与微调算力，不在本软件的范围内。
-
-**所以本软件对 ASR 的立场是**：只提供**不编造内容**的处理（降噪 / EQ / 动态 / 去闷），把「降噪强度」当变量实测，并保留「不处理」与「DSP 基线」作对照。带宽扩展与生成式修复一律归入「试听用」，不用于识别。详见下节。
+**The most important thing to note here**: the diagnosis shows the high frequencies are lost in the **acoustic path**, and moving the microphone closer, or checking Windows' sound-enhancement / communications-mode settings, may gain you more than any of the post-processing here. All the software can do is compensate downstream for what was lost upstream.
 
 ---
 
-1. **界面用 PyQt5（Qt5）而不是 PySide6（Qt6），这是本机环境决定的，不是偏好。**
-   本机 Python 来自 Anaconda，其 `python312.dll` 在进程启动时就加载了 Anaconda 目录下的 VC 运行库 **14.44** 版；而 PySide6 6.11 自带的 Qt 6.11.2 要求 **≥14.50**，导入即报 `WinError 127`（已用 PySide6 6.11.2 + Python 3.12.4 实测复现并定位）。
-   往 venv 里放新版运行库无效——DLL 按名字绑定，14.44 先被加载就锁定了。在**不改动 Anaconda 安装**的前提下，Qt5（只要求 14.2x）是唯一可行路径。
-   若你以后改用 python.org 的 Python 建环境，可以换回 PySide6，改动仅限 `core/worker.py` 与 `ui/*.py` 的导入行（`Signal` → `pyqtSignal`、`QAction` 从 `QtGui` 回到 `QtWidgets`、`exec_()` → `exec()`、`event.pos()` → `event.position()`）。
+## Why there is no "fix unclear articulation" model
 
-2. **DeepFilterNet3 路径的输出精度上限是 16-bit。** 该工具内部只支持到 16-bit（喂 PCM_24 会直接 panic，`TooWide`，已实测）。其他引擎没有这个限制。
+If the cause of "I cannot make out what is being said" is **articulation / pronunciation itself**, then **no algorithm exists that can fix unclear articulation**. This is not "it has not been found yet"; the question itself is a different one:
 
-3. **DPDFNet2 48kHz HR 会把 16 kHz 输入升采样到 48 kHz 输出。** 这是它的原生采样率决定的，不是 bug。管线会再重采样回目标采样率。（**更正，2026-10-01**：本来说"只是多了一趟升采样"，但当时 `_pad_tail` 会把这个 3 倍长的输出**截断成 1/3**，实际交付的是"时长对、内容只剩前 1/3 且变调"的错误结果——该缺陷已修，`CHAIN_VERSION` 已递增到 4，`tests/check_engine_rate.py` 钉住。）
+- Academia models this class of problem as **conversion / resynthesis**, not "repairing a waveform". Examples are dysarthric→healthy voice conversion (RnV, `arXiv:2506.01618`, GPL-3.0) and diffusion resynthesis after restoring phoneme embeddings with an SSL model (DiffDSR, `arXiv:2506.00350`, no public code found). What they have in common is that they **change the timbre and even the content representation** — in essence "saying it again" — and they need torch plus WavLM/diffusion models.
+- The root cause: what is lost at the articulation level is **distinguishable acoustic contrast** (the differences between plosives, fricatives and vowels), not components masked by noise. Denoising can restore what is "covered up", but no front-end algorithm can supply a distinction that was **never produced**.
 
-4. **增强不保证提高识别率。** 所有降噪模型都是按感知指标（PESQ/STOI）训练的，激进降噪会削掉低能量辅音、引入音乐噪声，反而可能抬高 WER。**建议把「降噪强度」当变量实测**，并保留「DSP 基线」与「不处理」作对照。
+**There is also a directional counter-argument worth remembering on its own**: using denoising to improve recognition rates systematically backfires on modern ASR. `arXiv:2512.17562` (2025-12, a technical report) used MetricGAN+ denoising and, across 4 modern ASR systems (Whisper / NVIDIA Parakeet / Gemini Flash 2.0 / Parrotlet-a) × 9 kinds of noise × 500 utterances, measured that **all 40 of 40 configurations got worse after denoising**, with an absolute degradation of 1.1%–46.6% (semWER). The authors conclude that modern ASR already has noise robustness of its own, and that conventional enhancement removes the acoustic features ASR relies on.
+(Accounting: a technical report + medical speech + the specific method MetricGAN+, so it is not a universal law; but it agrees with the mechanism explained in another paper, `arXiv:1903.04567` — the distortion enhancement introduces does not match ASR's training distribution, and "clearer to the human ear" does not mean "more recognisable to the machine".)
 
-5. **低电平素材：增益归一化的收益可能大于降噪。** 你的 `Timeline 1.wav` 实测峰值仅 0.164（−15.7 dBFS）、RMS −45.4 dBFS；以这个电平直接送 ASR，识别率会被电平拖累。
+**The only direction with evidence of a positive gain is on the ASR side, not in the front end**: LoRA fine-tuning of Whisper plus a Perceiver speaker prompt reduces **CER by a further 13.04%** relative to a fine-tuned Whisper on Chinese dysarthric speech (`arXiv:2406.09873`, Interspeech 2024). The cost is that it needs data from that speaker and fine-tuning compute, which is outside this software's scope.
 
-6. **中间静音不会被删除**，只做检测与报告（界面日志里会列出段数与合计时长）。删除会改变时间轴，风险高于收益。
-
-7. **模型只处理单声道。** 「保持立体声」是逐声道分别送模型，不是模型本身支持立体声。
-
-8. **超长文件会走分段路径**（默认每段 10 分钟、0.5 秒交叉淡化），以限制内存峰值。分段接缝处经测试无异常跳变，但理论上与整段处理结果不完全一致。
-
-9. **未做 PyInstaller 打包。** 批处理只在界面里提供，没有命令行批处理模式。项目路径含空格（`Program folders`），所有子进程调用都已加引号。
-
-12. **变体试听会重置播放位置。** 切换变体是把整段音频重新载入双轨播放器（原音 + 该变体），所以播放位置归零。要改成「支持任意多条变体轨且保持位置」，得改造 `ui/player.py` 与 `ui/waveform.py` 的两路结构——本轮刻意没做，把风险留给了新增功能，而不是动被像素级测试约束的 A/B 区。
-
-13. **批处理的并发数是固定的 2**（再按内存收敛为 1 或拒绝启动）。界面上没有「并行文件数」调节项；「参数」里的线程数是单个引擎内部的线程数，两者不是一回事。
-
-14. **变体列表只列当前文件**的已有结果，并且只扫描该输入文件所在的那个输出目录。指纹身份用的是**输入文件的绝对路径**，所以移动输入文件后，旧结果不会再被关联回它（正确性优先于此处的便利性：曾经用「文件名 + 大小」当身份，实测两份同名同大小的文件在不同目录会算出同一指纹并互相串用）。
-
-15. **`VariantEntry.describe()` 只返回链路标签**（它内部算出的采样率/RTF 从不参与返回值的拼装；界面侧已改为自行拼接，`ui/main_window.py` 的 `_variant_text`）。它**不是**死代码——`tests/check_outputs.py` 仍用它做"标签非空"的冒烟断言。上一版 README 写成"死代码、留给后续清理"是**说错了**，2026-10-01 更正。（真正的死代码 `pipeline.default_output_path` / `dsp.trim_to_span` / `engines.kind_of` / `engines.build_all` 已在同一天删除。）
-
-16. **「输出视频」只在容器支持时才可用，且明确拒绝若干情况**，而不是静默降级：
-    - **勾选状态逐文件复位**（2026-10-01 修）。此前 `_on_analyzed` 对可回写容器只做 `setEnabled(True)`、从不复位 `checked`，于是**本会话里只要对任何一个视频勾过一次，之后每次处理视频都会静默写回视频**。实测后果：用户报「没勾输出视频，却产出一个 713 MB 的 mp4」，而那次运行的 `manifest.json` 里明确写着 `video_out: true`、`chain_label` 含「写回视频」。现在换文件一律回到「输出音频」，且运行前就有「本次输出：…」与预测文件名两处提示——**不靠"用户会注意到"来保证正确性**。`tests/check_video_remux.py` §4b 与 `tests/smoke_ui.py` §9 钉住了这两条。
-    - 拒绝的容器：`.rmvb`（rm 封装器能力弱）、`.vob`（mpeg 封装器不重建 NAV 包）、`.mpg`/`.mpeg`（MPEG-PS 里放 AAC 非标准）、`.m4v`（裸 MPEG-4 视流，没有音轨语义）。
-    - 拒绝的情形：源文件含多条视频流（会静默丢流）、含 attachment 之类不支持的流类型、**开了裁剪且真的裁掉了内容**（音频比视频短会让音画时长不一致）、磁盘剩余空间不足（视频要原样复制）。
-    - **绝不重编码视频**：需要重编码才能完成的情形一律拒绝。理由与本项目对去混响的处理一致——宁可拒绝，也不给一个既慢、又有代际损失、还会悄悄改变素材的路径。
-    - **输入文件永不被改写**：函数入口硬断言输出路径 ≠ 输入路径（同一路径既读又写会直接截断源视频），并采用「临时文件 + 原子替换」写出。`tests/check_video_remux.py` 逐字节校验源文件的 sha256 与 mtime 未变。
-    - **回写之后再处理，读的仍是「最初的原始音轨」**（这一点单独验证过，因为"每跑一次都在上一次的结果上继续叠加"会越跑越糟）：`tests/check_video_remux.py` 的 2b 节把二次处理解出来的原音与最初的原始音轨做**逐样本比较**（实测 33792 帧全等），并确认它不是回写进去的那一条（RMS 0.1719 vs 0.0872）。
-      容易混淆的另一条路径是**把回写产物本身当新输入导入**——那时读到的当然是它自己的音轨（即增强后的那条）。这是预期行为，套件里也一并钉住了，以免被误当成缺陷。
-
-17. **不提供去混响（WPE 或神经方案），理由与证据**：
-    - 自研的单通道 WPE 实测无效（尾部能量反升 15.7 dB、与干声相关性 −0.35），已停用。
-    - 换用成熟实现 **nara_wpe**（MIT，573★）重新验证：轴序正确（STFT/ISTFT 往返误差 2.2e-16），但 taps 10–30 / delay 3 / iterations 3–8 四组参数下**衰减斜率只动不到 1.5 dB/s、发闷指数与谱质心几乎不变**，唯一变化是峰值升高约 1.2 dB。**成熟实现也基本不做事**——与文献一致，WPE 的收益主要来自多通道空间信息。
-    - 神经去混响的调研结论（2026-09-21）：真正做**单通道去混响**且权重可下载的选项极少。多数热门工具箱其实**不做去混响**——ClearerVoice-Studio 的任务清单/训练目录/代码支持列表里都没有 dereverb；MP-SENet 宣称覆盖去混响但**已发布权重只有去噪**；ZipEnhancer 是 ANS（降噪），卡片里"剔除混响"属营销措辞。同时 `drive.google.com` 在本机**不可达**，直接砍掉了 SGMSE/StoRM 的去混响权重（其 README 用 gdown 从 GDrive 取）与 DARE-Net。
-    - 因此本项目只交付**混响检测指标**（衰减斜率），不做混响抑制。要真正改善请从采集侧入手（麦距、房间），那是唯一有量级收益的地方。
-
-10. **DeepFilterNet3 会把整个文件读入内存**（16 分钟立体声约 370 MB），且没有进度输出（因此界面上这一步只有状态文字、进度条不动）。
-
-11. **`ui/theme.py` 里有几处 Qt 样式表的"雷"，改的时候别踩**（都写了注释与实际测量数字）：
-    - **不要给 `QWidget` 设 `background`**：那会让每个子控件都画出不透明矩形，在分组框里表现为一块块色斑。底色由 QPalette 负责。
-    - **不要给 `QCheckBox` / `QRadioButton` 写 `background`，也不要提 `::indicator`**：实测只要加一句 `background: transparent`，未选中单选的圆圈就会从 94 个非背景像素掉到 2 个（基本消失）；只写 `::indicator` 的 `width/height` 也会把指示器切成"样式表驱动绘制"而不再画原生图形。统一交给 Fusion 原生绘制。
-    - **`QPalette` 的 Active 与 Inactive 两组都要设**：只设 Active 的话，窗口一失去焦点就会回落到系统默认的**亮色**调色板，整个界面变白。
-    - **不要把注释写成 `{ ... }`**：`theme.qss()` 是 f-string，花括号会被当成占位符而报 `NameError`。
+**So this software's position on ASR is**: it provides only processing that **invents no content** (denoising / EQ / dynamics / de-muffle), it treats "denoise strength" as a variable to be measured, and it keeps "no processing" and the "DSP baseline" as controls. Bandwidth extension and generative repair all belong under "for audition" and are not for recognition. See the next section.
 
 ---
 
-## 自检与测试
+1. **The interface uses PyQt5 (Qt5) rather than PySide6 (Qt6); this is decided by this machine's environment, not by preference.**
+   This machine's Python comes from Anaconda, and its `python312.dll` loads version **14.44** of the VC runtime from the Anaconda directory at process start; PySide6 6.11's bundled Qt 6.11.2 requires **≥14.50**, so importing it reports `WinError 127` (reproduced and localised with PySide6 6.11.2 + Python 3.12.4).
+   Putting a newer runtime into the venv does not help — DLLs bind by name, and 14.44 is locked in once loaded. **Without modifying the Anaconda installation**, Qt5 (which only requires 14.2x) is the only viable path.
+   If you later build the environment with a python.org Python, you can go back to PySide6; the changes are limited to the import lines in `core/worker.py` and `ui/*.py` (`Signal` → `pyqtSignal`, `QAction` back from `QtGui` to `QtWidgets`, `exec_()` → `exec()`, `event.pos()` → `event.position()`).
 
-在项目根目录运行：
+2. **The output precision ceiling of the DeepFilterNet3 path is 16-bit.** That tool supports only up to 16-bit internally (feeding it PCM_24 panics outright with `TooWide`, measured). No other engine has this limit.
+
+3. **DPDFNet2 48kHz HR upsamples 16 kHz input to a 48 kHz output.** That follows from its native sample rate; it is not a bug. The pipeline then resamples back to the target rate. (**Correction, 2026-10-01**: it used to be described as "just one extra upsampling pass", but at the time `_pad_tail` **truncated** that 3×-long output to **1/3**, so what was actually delivered was a wrong result with "the right duration and only the first 1/3 of the content, pitch-shifted" — that defect has been fixed, `CHAIN_VERSION` has been bumped to 4, and `tests/check_engine_rate.py` pins it.)
+
+4. **Enhancement does not guarantee a higher recognition rate.** All denoising models are trained on perceptual metrics (PESQ/STOI), so aggressive denoising cuts low-energy consonants and introduces musical noise, and may actually raise WER. **Treat "denoise strength" as a variable and measure it**, keeping the "DSP baseline" and "no processing" as controls.
+
+5. **Low-level material: gain normalisation may gain you more than denoising.** Your `Timeline 1.wav` measured a peak of only 0.164 (−15.7 dBFS) and an RMS of −45.4 dBFS; feed that level straight into ASR and the recognition rate is dragged down by the level.
+
+6. **Silence in the middle is not deleted**, only detected and reported (the interface log lists the number of stretches and their total duration). Deleting it would change the timeline, and the risk outweighs the benefit.
+
+7. **The models process mono only.** "Keep stereo" sends each channel to the model separately; the model itself does not support stereo.
+
+8. **Very long files take the segmented path** (10 minutes per segment by default, with a 0.5 s crossfade) to bound peak memory. The segment seams were tested and show no anomalous jumps, but in theory the result is not exactly identical to whole-file processing.
+
+9. **No PyInstaller packaging.** Batch processing is only offered in the interface; there is no command-line batch mode. The project path contains a space (`Program folders`), and every subprocess invocation is quoted.
+
+12. **Switching variants resets the playback position.** Switching a variant reloads the whole piece of audio into the two-track player (original + that variant), so the playback position goes back to zero. Supporting "any number of variant tracks while keeping the position" would require reworking the two-way structure of `ui/player.py` and `ui/waveform.py` — deliberately not done this round, leaving the risk to new features instead of touching the A/B area, which is constrained by pixel-level tests.
+
+13. **The batch concurrency is a fixed 2** (then converging to 1 or refusing to start, based on memory). There is no "number of parallel files" control in the interface; the thread count under "Parameters" is the number of threads inside a single engine, which is a different thing.
+
+14. **The variant list lists only the existing results of the current file**, and scans only the one output directory belonging to that input file. The fingerprint identity uses the **absolute path of the input file**, so after moving an input file its old results are no longer associated with it (correctness takes priority over convenience here: identity used to be "filename + size", and measured, two files with the same name and size in different directories computed the same fingerprint and were used interchangeably).
+
+15. **`VariantEntry.describe()` returns only the chain label** (the sample rate/RTF it computes internally never takes part in assembling the return value; the interface side now assembles it itself, in `_variant_text` in `ui/main_window.py`). It is **not** dead code — `tests/check_outputs.py` still uses it for a "label is non-empty" smoke assertion. The previous version of the README saying it was "dead code, left for later cleanup" was **wrong**, corrected 2026-10-01. (The genuinely dead code `pipeline.default_output_path` / `dsp.trim_to_span` / `engines.kind_of` / `engines.build_all` was deleted the same day.)
+
+16. **"Output video" is available only when the container supports it, and it explicitly refuses several cases** rather than silently degrading:
+    - **The checked state is reset per file** (fixed 2026-10-01). Previously `_on_analyzed` only did `setEnabled(True)` for a write-back-capable container and never reset `checked`, so **once you had checked it for any video in this session, every subsequent video processing silently wrote a video back**. Measured consequence: the user reported "I did not check output video, yet it produced a 713 MB mp4", and that run's `manifest.json` explicitly said `video_out: true` with a `chain_label` containing "write back video". Now switching files always returns to "output audio", and before the run there are two hints — "This run outputs: …" and the predicted filename — **correctness does not rely on "the user will notice"**. Section 4b of `tests/check_video_remux.py` and section 9 of `tests/smoke_ui.py` pin these two behaviours.
+    - Refused containers: `.rmvb` (the rm muxer is weak), `.vob` (the mpeg muxer does not rebuild NAV packets), `.mpg`/`.mpeg` (AAC in MPEG-PS is non-standard), `.m4v` (a bare MPEG-4 video stream with no audio-track semantics).
+    - Refused situations: the source file contains several video streams (streams would be silently dropped), it contains unsupported stream types such as attachments, **trimming is on and actually trimmed something** (audio shorter than video makes the audio/video durations inconsistent), and insufficient free disk space (the video is copied as is).
+    - **The video is never re-encoded**: any case that would require re-encoding is refused. The rationale matches this project's handling of dereverberation — better to refuse than to offer a path that is slow, has generational loss, and quietly changes the material.
+    - **The input file is never rewritten**: the function asserts at entry that the output path ≠ the input path (reading and writing the same path would truncate the source video), and writes through "temporary file + atomic replace". `tests/check_video_remux.py` verifies byte by byte that the source file's sha256 and mtime are unchanged.
+    - **Processing again after a write-back still reads the "original original audio track"** (verified separately, because "each run stacking onto the previous result" would get worse every time): section 2b of `tests/check_video_remux.py` compares the original audio extracted by a second processing pass **sample by sample** against the original original audio track (measured: all 33792 frames identical), and confirms that it is not the track that was written back (RMS 0.1719 versus 0.0872).
+      The other path that is easy to confuse is **importing the write-back product itself as a new input** — there you obviously read its own audio track (the enhanced one). That is expected behaviour, and the suite pins it too so it is not mistaken for a defect.
+
+17. **Dereverberation (WPE or a neural approach) is not offered, with reasons and evidence**:
+    - The in-house single-channel WPE was measured ineffective (tail energy rose by 15.7 dB, correlation with the dry signal −0.35) and has been disabled.
+    - Re-verified with a mature implementation, **nara_wpe** (MIT, 573★): the axis order is correct (STFT/ISTFT round-trip error 2.2e-16), but across the four parameter sets taps 10–30 / delay 3 / iterations 3–8 **the decay slope moved by less than 1.5 dB/s** and the muffle index and spectral centroid were almost unchanged; the only change was a peak increase of about 1.2 dB. **A mature implementation also does essentially nothing** — consistent with the literature, where WPE's benefit comes mainly from multi-channel spatial information.
+    - Survey conclusions on neural dereverberation (2026-09-21): there are very few options that genuinely perform **single-channel dereverberation** with downloadable weights. Most popular toolboxes in fact **do not do dereverberation** — ClearerVoice-Studio has no dereverb in its task list, training directory or supported-code list; MP-SENet claims to cover dereverberation but **only the denoising weights were released**; ZipEnhancer is ANS (denoising) and "removing reverb" in its card is marketing language. At the same time `drive.google.com` is **unreachable** from this machine, which directly removes the SGMSE/StoRM dereverberation weights (their README fetches them from GDrive with gdown) and DARE-Net.
+    - This project therefore delivers only the **reverb detection metric** (decay slope) and does not suppress reverb. For real improvement, start on the capture side (microphone distance, room) — that is the only place with an order-of-magnitude gain.
+
+10. **DeepFilterNet3 reads the entire file into memory** (about 370 MB for 16 minutes of stereo), and it produces no progress output (which is why that step shows only status text in the interface and the progress bar does not move).
+
+11. **There are several Qt style-sheet "landmines" in `ui/theme.py`; do not step on them when editing** (each carries a comment with the actual measured numbers):
+    - **Do not set a `background` on `QWidget`**: that makes every child widget paint an opaque rectangle, which shows up as blotches inside group boxes. The base colour is QPalette's job.
+    - **Do not write a `background` for `QCheckBox` / `QRadioButton`, and do not mention `::indicator`**: measured, adding a single `background: transparent` makes an unchecked radio's circle drop from 94 non-background pixels to 2 (essentially gone); writing only `::indicator`'s `width/height` also turns the indicator into "style-sheet-driven drawing" and it stops painting the native shape. Leave it all to Fusion's native painting.
+    - **Set both the Active and the Inactive group of the `QPalette`**: with only Active set, the moment the window loses focus it falls back to the system default **light** palette and the whole interface turns white.
+    - **Do not write comments as `{ ... }`**: `theme.qss()` is an f-string, so braces are taken for placeholders and it raises `NameError`.
+
+---
+
+## Self-checks and tests
+
+Run these from the project root:
 
 ```powershell
 $py = ".\.venv\Scripts\python.exe"
 
-& $py tests\check_setup.py           # 模型清单 + 文件校验 + 媒体 I/O 往返
-& $py tests\check_setup.py --net     # 额外探测每个缺失模型的来源 URL 可达性
+& $py tests\check_setup.py           # model manifest + file verification + media I/O round trip
+& $py tests\check_setup.py --net     # additionally probe the reachability of every missing model's source URL
 
-& $py tests\smoke_sherpa.py          # 降噪模型逐个加载并推理，打印 RTF
-& $py tests\smoke_dfn.py             # DFN3 exe：16k/44.1k/48k 三种输入
-& $py tests\check_pipeline.py        # 全引擎流水线 + 48kHz 立体声 + 裁剪 + 分段接缝
-& $py tests\check_media_formats.py   # 格式矩阵 + 视频链路 + 多音轨 + 无音轨报错
-& $py tests\check_outputs.py         # 输出位置 / 命名规范 / 指纹 / 同参数复用 / 只读回退
-& $py tests\check_batch.py           # 批处理：内存收敛、失败隔离、取消、线程局部引擎
-& $py tests\check_enhance.py         # 高通 / 搁架 EQ / 压缩 / 混响指标 / 带宽扩展 / WPE 必须被拒
-& $py tests\check_variants.py        # 变体发现：先后单选 / 多选后 / 先后多选 / 重启进程后
-& $py tests\check_engine_rate.py     # 引擎输出率与内容保真：长度必须能自证采样率、升采样模型不得被截断、分段路径不错位
-& $py tests\check_speed.py           # 加速与闸门：分块帧电平/裁剪合并逐位相同、声道并行逐位相同、内存闸门、推理槽位、预解码复用、解码峰值
-& $py tests\check_io_atomic.py       # I/O 完整性：原子写不留半截文件、截断产物不被复用、.part 被扫描忽略
-& $py tests\check_cancel.py          # 取消响应：DFN 子进程可中断 ≤2 s、解码/写回可中断、取消异常只有一个类型
-& $py tests\check_crash_log.py       # 崩溃可诊断：槽内与工作线程异常都带 traceback 落盘、faulthandler 已装载
-& $py tests\check_video_remux.py     # 视频音轨回写：视频原样复制、音轨替换、拒绝条件、源文件不被改写、二次处理仍读原始音轨、**不勾选时产出音频**
-& $py tests\smoke_ui.py              # 无头 UI 全链路（导入→处理→A/B→导出→下载模型）+ 滚轮护栏行为
-& $py tests\render_ui.py             # 界面渲染截图 + 布局重叠/裁切/指示器绘制检查
-& $py tests\check_icon.py            # 任务栏图标：AppUserModelID + WM_GETICON 回读
-& $py tests\check_gpu.py             # GPU：运行库探测、设备决策、真启用证据、CPU/GPU 等价性、回退
-& $py tests\smoke_launch.py          # 真实启动 run.py，确认窗口创建后进程稳定驻留
+& $py tests\smoke_sherpa.py          # load and run each denoising model in turn, print the RTF
+& $py tests\smoke_dfn.py             # DFN3 exe: 16k/44.1k/48k inputs
+& $py tests\check_pipeline.py        # full-engine pipeline + 48kHz stereo + trimming + segment seams
+& $py tests\check_media_formats.py   # format matrix + video path + multi-track + error on no track
+& $py tests\check_outputs.py         # output location / naming convention / fingerprint / same-parameter reuse / read-only fallback
+& $py tests\check_batch.py           # batch: memory convergence, failure isolation, cancellation, thread-local engines
+& $py tests\check_enhance.py         # high-pass / shelf EQ / compression / reverb metric / bandwidth extension / WPE must be rejected
+& $py tests\check_variants.py        # variant discovery: one at a time / after multi-select / multi-select in sequence / after restarting the process
+& $py tests\check_engine_rate.py     # engine output rate and content fidelity: the length must self-evidence the sample rate, an upsampling model must not be truncated, the segmented path must not misalign
+& $py tests\check_speed.py           # speed-ups and gates: chunked frame level / merged trimming bit-identical, channel parallelism bit-identical, memory gate, inference slots, predecoded reuse, decode peak
+& $py tests\check_io_atomic.py       # I/O integrity: atomic writes leave no half file, truncated artefacts are not reused, .part is ignored by the scan
+& $py tests\check_cancel.py          # cancellation responsiveness: the DFN subprocess is interruptible within ≤2 s, decoding/write-back are interruptible, there is only one cancellation exception type
+& $py tests\check_crash_log.py       # crash diagnosability: exceptions in slots and in worker threads both land on disk with a traceback, faulthandler is installed
+& $py tests\check_video_remux.py     # video track write-back: video copied as is, track replaced, refusal conditions, source file not rewritten, a second pass still reads the original track, **produces audio when unchecked**
+& $py tests\smoke_ui.py              # headless UI end-to-end (import→process→A/B→export→download model) + wheel-guard behaviour
+& $py tests\render_ui.py             # interface render screenshots + layout overlap/clipping/indicator drawing checks
+& $py tests\check_icon.py            # taskbar icon: AppUserModelID + WM_GETICON read-back
+& $py tests\check_gpu.py             # GPU: runtime probing, device decisions, evidence of real activation, CPU/GPU equivalence, rollback
+& $py tests\smoke_launch.py          # really launch run.py and confirm the process stays resident after the window is created
 
-& $py tests\download_models.py --check   # 只探测来源，不下载
+& $py tests\download_models.py --check   # probe sources only, do not download
 ```
 
-`check_enhance.py` 支持 `--skip-bwe`（跳过带宽扩展，快约一倍）。`check_gpu.py` 支持 `--skip-timing`（跳过需要建 CUDA 会话的几项）。
+`check_enhance.py` accepts `--skip-bwe` (skip bandwidth extension, about twice as fast). `check_gpu.py` accepts `--skip-timing` (skip the items that need a CUDA session).
 
-`tests/gpu_probe.py` 不是独立套件，而是 `check_gpu.py` 用的**子进程探针**（`default` / `sherpa-cuda` / `sherpa-only` 三种模式）。隔离到子进程是必需的：显式让 sherpa 试 CUDA 的进程会在退出时段错误（见「GPU / CUDA」），放在同一进程里会把整套测试带崩。它也可以单跑，用于看某个场景到底用了什么设备。
+> **On a Chinese Windows console, set the encoding before running.** These scripts print characters beyond GBK such as `✓` / `❌` / `→` / `≤`; with the console's default code page 936, `print` raises `UnicodeEncodeError` and the script exits with a non-zero (≠ 0) status (even though every assertion before that point passed). First run `$env:PYTHONIOENCODING = "utf-8"` (PowerShell) or `set PYTHONIOENCODING=utf-8` (cmd); `chcp 65001` also works. `tests/render_ui.py` switches to UTF-8 by itself inside the script and is unaffected.
 
-`tests/media_fixtures.py` 同理不是套件，而是**合成素材的共用构造**（`make_video/tone/silence`）。`check_video_remux.py` 里本来有一份同样的 `make_video`，但那 48 项断言是绿着的，刻意**不去改动它**；新加的小节用这份独立实现，两边互不牵动。
+`tests/gpu_probe.py` is not a standalone suite but the **child-process probe** used by `check_gpu.py` (three modes: `default` / `sherpa-cuda` / `sherpa-only`). Isolating it into a child process is necessary: a process that explicitly lets sherpa try CUDA segfaults during shutdown (see "GPU / CUDA"), and keeping it in the same process would take down the whole test suite. It can also be run on its own, to see which device a given scenario actually used.
 
-`check_speed.py` 的参照实现（改动前的写法）直接写在套件文件里，这样"等价性"不依赖被改动的模块自身；它还顺带用 `tracemalloc` 量出分块前后**一次帧电平遍历**的峰值分配差（1200 s 单声道：2197 MB → 76 MB）。
+`tests/media_fixtures.py` is likewise not a suite but the **shared construction of synthetic material** (`make_video/tone/silence`). `check_video_remux.py` originally contained an identical `make_video`, but those 48 assertions are green and it was deliberately **left untouched**; the newly added sections use this separate implementation, so the two do not affect each other.
 
-**两条顺序约束**（都因为测试会临时改动共享状态，不是可选的偏好）：
+The reference implementation in `check_speed.py` (the pre-change code) is written directly into the suite file, so that "equivalence" does not depend on the module being changed; it also uses `tracemalloc` to measure the peak allocation difference of **one frame-level traversal** before and after chunking (1200 s mono: 2197 MB → 76 MB).
 
-- **`smoke_ui` 不能与 `check_pipeline` / `check_batch` / `check_media_formats` 同时跑。** 它会把 `models/sherpa/gtcrn_simple.onnx` 临时移成 `.smokebak`，再联网重下并校验 sha256 后还原，而那三套都要用 gtcrn。若进程被强杀，权重会以 `.smokebak` 形式滞留，需手动改回文件名。
-- **`check_batch` 要在内存干净的窗口里跑。** 它的断言包含「按请求并发」与「加速比 > 1.2」，而内存守卫在空闲 < 1.5 GB 时会把它降到 1 个并发（于是断言失败）、< 0.8 GB 时直接拒绝启动。
+**Two ordering constraints** (both because the tests temporarily change shared state; they are not optional preferences):
 
-`smoke_ui` 与 `render_ui` 也建议串行：两者都会触发一次自动写出。
+- **`smoke_ui` must not run at the same time as `check_pipeline` / `check_batch` / `check_media_formats`.** It temporarily moves `models/sherpa/gtcrn_simple.onnx` aside to `.smokebak`, re-downloads it over the network, verifies its sha256 and restores it, and all three of those suites need gtcrn. If the process is killed hard, the weights are left behind as `.smokebak` and the filename must be changed back by hand.
+- **`check_batch` must run in a window with clean memory.** Its assertions include "the requested concurrency" and "speed-up > 1.2", and the memory guard reduces it to 1 concurrent job when free memory is < 1.5 GB (so the assertion fails) and refuses to start below 0.8 GB.
 
-`tests/render_ui.py` 有三点值得说明：
+`smoke_ui` and `render_ui` are also best run serially: both trigger an automatic write-out.
 
-- 它**不能用 offscreen 平台**。本机 offscreen 的字体库是 0 个字体族，所有文字都渲染不出来，截图无法反映真实观感。它改用真实的 windows 平台并给窗口加 `WA_DontShowOnScreen`——布局与字体都是真的，窗口不会出现在屏幕上。
-- 它**程序化检测兄弟控件重叠**（递归比较同父控件下的两两矩形）与**横向裁切**（内容宽度 > 视口宽度），在 4 种窗口尺寸下各查一遍。
-- 它用 `QStyle.subElementRect` 取指示器真实矩形，并**逐像素比较已勾选与未勾选的指示器图像**来确认 ✓ 真的画出来了。这个度量不含假设：标记一旦被样式表抹掉，两者会完全一致。
+Three things about `tests/render_ui.py` are worth explaining:
 
-`tests/diagnose_pyside.py` 保留下来用于诊断 Qt DLL 问题（当上第 1 条限制）。
+- It **cannot use the offscreen platform**. On this machine the offscreen font database has 0 font families, so nothing renders and the screenshots would not reflect the real appearance. It uses the real windows platform instead and gives the window `WA_DontShowOnScreen` — the layout and fonts are real, but the window never appears on screen.
+- It **detects sibling-widget overlap programmatically** (recursively comparing every pair of rectangles under the same parent) and **horizontal clipping** (content width > viewport width), at 4 window sizes.
+- It obtains the indicator's real rectangle with `QStyle.subElementRect` and **compares the checked and unchecked indicator images pixel by pixel** to confirm the ✓ is really drawn. That metric assumes nothing: once the mark is wiped out by a style sheet, the two are identical.
 
----
-
-## 鲁棒性审计与修复（2026-10-01）
-
-一次只读审计（两个子代理分别覆盖 `engines/bwe/cuda_env/modelstore/worker/run.py` 与 `ui/*`，
-主代理覆盖 `pipeline/dsp/enhance/media_io/outputs`）之后落地的修复。每条都带可证伪的测试。
-
-### 数据完整性
-
-1. **升采样模型曾被静默截断（唯一一处"输出内容错误却不报错"）**。`engines._pad_tail` 早先写
-   `return y[:target_len]`：`dpdfnet2_48khz_hr` 喂 16 kHz 素材时模型内部升采样到 48 kHz、
-   返回 **3 倍**样本数，被砍成 1/3。样本数一旦对齐回输入长度，`align_to` / `_stack` / `_effective_rate`
-   全都看不见它——实测后果是「时长看起来一致、内容只剩前 1/3，且被当成 16 kHz 播放（3× 变调）」：
-   16 kHz 的 1 kHz 正弦输出谱峰落到 **333 Hz**。修法是让长度比原样传下去（由 `_effective_rate`
-   推断真实率、再由 pipeline 统一重采样），分段路径同时改成**按实测比率在输出域做 OLA**
-   （并拒绝各段比率不一致的情况）。**`CHAIN_VERSION` 3 → 4**：旧产物确实是错的，必须让它们失效。
-   新套件 `tests/check_engine_rate.py`（长度必须能自证采样率 + 1 kHz 内容不得被搬走）。
-2. **写出改成原子写 + 复用前做完整性校验**。`write_audio` 此前直接写最终文件名，而 pipeline
-   判断"算过没有"**只看文件名里的指纹**：磁盘写满/被强杀/断电留下的半截文件会被当成"参数与已有
-   结果完全一致"复用（轻度截断被 `align_to` 用原音尾部悄悄补齐；重度截断则每次重试都抛
-   「这是上游缺陷」而用户不知道该删哪个文件）。现在临时文件 + `os.replace`，复用分支顺带比对
-   时长（无损容器 2 ms、mp3 60 ms——mp3 有编码器延迟，容差必须放宽）不符就重算。
-   `tests/check_io_atomic.py`。
-3. **带宽扩展的频段平衡不再静默放行**：`balance_gains` 早先测不出功率时返回 `(1.0, 1.0)`，
-   而 `apply_balance` 见 (1,1) 会**原样交付模型原始输出**（本文件实测其生成频段最高 +89 dB）。
-   现在这种情况**明确拒绝**并说明原因。
-
-### 可用性 / 资源
-
-4. **「取消」从分钟级降到秒级**。DFN 用 `subprocess.run(timeout=3600)`，子进程结束前没人能插手
-   ——实测 69 分钟素材约 **237 s/声道**；解码与写回视频（约 136 s）也完全没有取消入口。
-   现在 DFN 是 `Popen` + 0.25 s 轮询（`terminate` → 3 s 宽限 → `kill`，**实测取消延迟 8 ms**），
-   `decode` / `write_video_with_audio` 都接受 `cancel` 回调，写出前还会再查一次标志。
-   顺带修掉两处：`dsp.Cancelled` 与 `engines.Cancelled` 曾是**两个不同的类**（于是取消发生在
-   DSP/EQ 阶段时会被显示成"处理失败"），现在统一到 `core/errors.py`；DFN 子进程加
-   `CREATE_NO_WINDOW`（pythonw 启动时它是控制台程序，否则会开一个黑窗口）。`tests/check_cancel.py`。
-5. **界面竞态**：`QThread.terminate()` 强杀解码线程（PyQt 官方反对，且 `wait(2000)` 对 69 分钟素材
-   必然超时）改成**协作取消**；分析结果加**代次校验**（旧 worker 的信号是排队投递的，此前会把
-   旧文件的 `_info/_stats/_source_audio/播放器/波形` 覆盖到新文件上）；单文件结果加**归属校验**
-   （移除/切走当前文件后不再把结果接进视图）。关窗时**逐个 cancel + wait 所有分析线程**——
-   这条是实测出来的：被丢弃的、仍在运行的 QThread 在自己的父对象析构时会让进程以
-   `0xC0000005` 结束（连跑 3 次 smoke_ui 复现 1 次，且发生在打印"全部通过"之后的退出阶段）。
-   `tests/smoke_ui.py` §10。
-6. **崩溃可诊断**：`run.py` 现在装 `sys.excepthook` + `threading.excepthook` + `faulthandler`。
-   此前全仓库没有任何一个：pythonw 下"某个槽函数抛异常"要么静默（只打印到虚空）要么 abort
-   （子代理在另一条路径实测 `0xC0000409`），用户只看到程序消失、`startup_error.log` 里什么都没有。
-   现在槽内与工作线程的异常都带 traceback 落盘，硬崩溃另有 `out/faulthandler.log`。
-   `tests/check_crash_log.py`。
-7. **进程级推理槽位**：批处理（2 worker）与声道并行（2）是两个**独立**闸门，各自只读空闲内存、
-   互不预留 → 最多 4 个 `deep-filter.exe` 同时跑（每个 69 分钟声道 2–3 GB）。现在用许可数
-   （按空闲内存约每 2 GB 一个、上限 4）把总并发钉住，等待槽位期间也响应取消。
-8. **下载的断点续传真的生效了**：重试前无条件删残片，于是"续传"只在取消/崩溃后有效——
-   本机对 GitHub 时通时断，200 MB–1.8 GB 的权重下到 90% 掉线就要整段重来。现在只有**校验失败**
-   才丢残片，网络中断**保留**并明确告知（`tests/check_setup.py` 覆盖）。
-
-### 界面行为
-
-9. 音轨下拉框此前是**无操作**：`_on_stream_changed` 设好音轨号后立刻被 `_import_file` 清成 None，
-   分析与处理都退回默认音轨、下拉框还会弹回去。现在同一文件重导入会保留所选音轨。
-10. 单文件处理期间「批量处理」不再可用（此前能同时跑两个任务），「取消」统一由
-    `_update_run_enabled` 决定；处理中导入不再弹模态框（嵌套事件循环 + 自动化套件会被挂住），
-    改为记日志并还原列表选区。
-11. **A/B 试听现在按两条轨里较高的采样率播放**：此前固定按源采样率播，16 kHz 素材的增强轨会被
-    **降采样回 16 kHz**——带宽扩展补出的 8–16 kHz 正好在试听里被丢掉（等于听不出"试听用"预设的效果），
-    还要多一趟整段重采样。同时换文件时按采样率/声道**重开音频流**（此前复用旧流会变速播放或让
-    回调拿到不匹配的形状），`_pos/_finished` 的跨线程读写补上了锁。
-
-### 本轮明确未做（记录在案）
-
-- **变体试听仍在 UI 线程同步解码**（69 分钟变体约 15 s 冻结，无进度无取消）→ 计划里是 M6，本轮未做。
-- 子代理报回的其余中危/低危项（`theme.py` Disabled 组只设 8 个 role、`run.log` 每行 open/close、
-  `wheel_guard` 拦到 `QScrollBar`、`cuda_ep_active()` 的模块名启发式、DFN 临时 WAV 无磁盘预检等）
-  未逐条处理；其中"BWE/EQ 每 30 s 块边界重建误差"一条经主代理用恒等曲线实测**不成立**
-  （65 s 信号 `max|y−x| = 4.5e-8`，块边界与块内无差异），**不要**再照它去"修"分块逻辑。
+`tests/diagnose_pyside.py` is kept for diagnosing Qt DLL problems (when you hit limitation 1 above).
 
 ---
 
-## 目录结构
+## Robustness audit and fixes (2026-10-01)
+
+The fixes that landed after a read-only audit (two subagents covering `engines/bwe/cuda_env/modelstore/worker/run.py` and `ui/*`, the main agent covering `pipeline/dsp/enhance/media_io/outputs`). Every one of them comes with a falsifiable test.
+
+### Data integrity
+
+1. **An upsampling model was being silently truncated (the only case of "wrong output content with no error")**. `engines._pad_tail` used to be written
+   `return y[:target_len]`: fed 16 kHz material, `dpdfnet2_48khz_hr` upsamples internally to 48 kHz and
+   returns **3×** the sample count, which was cut to 1/3. Once the sample count is realigned to the input length, `align_to` / `_stack` / `_effective_rate`
+   all fail to see it — the measured consequence was "the duration looks consistent, only the first 1/3 of the content remains, and it is played as 16 kHz (3× pitch shift)":
+   the spectral peak of a 1 kHz sine output at 16 kHz landed at **333 Hz**. The fix lets the length ratio pass through as is (`_effective_rate`
+   infers the real rate, then the pipeline resamples uniformly), and the segmented path simultaneously becomes **OLA in the output domain using the measured ratio**
+   (refusing the case where the per-segment ratios disagree). **`CHAIN_VERSION` 3 → 4**: the old artefacts really were wrong and had to be invalidated.
+   New suite `tests/check_engine_rate.py` (the length must self-evidence the sample rate + 1 kHz content must not be moved).
+2. **Writing became an atomic write + an integrity check before reuse**. `write_audio` used to write the final filename directly, while the pipeline
+   judged "has this been computed" **only by the fingerprint in the filename**: a half file left by a full disk / a hard kill / a power cut would be reused as "the parameters
+   match an existing result exactly" (a light truncation was quietly padded from the original's tail by `align_to`; a heavy truncation made every retry raise
+   "this is an upstream defect" while the user had no idea which file to delete). Now a temporary file + `os.replace`, and the reuse branch also compares
+   the duration (2 ms for lossless containers, 60 ms for mp3 — mp3 has encoder delay, so the tolerance must be relaxed) and recomputes on a mismatch.
+   `tests/check_io_atomic.py`.
+3. **Band balance for bandwidth extension no longer passes silently**: `balance_gains` used to return `(1.0, 1.0)` when it could not measure power,
+   and `apply_balance` seeing (1,1) would **deliver the model's raw output as is** (this document measured its generated band at up to +89 dB).
+   Now that case is **refused explicitly**, with the reason stated.
+
+### Usability / resources
+
+4. **"Cancel" went from minutes to seconds**. DFN used `subprocess.run(timeout=3600)` and nobody could intervene before the child finished
+   — measured, 69 minutes of material took about **237 s/channel**; decoding and video write-back (about 136 s) had no cancellation entry at all either.
+   Now DFN is `Popen` + 0.25 s polling (`terminate` → 3 s grace → `kill`, **measured cancellation latency 8 ms**), and
+   `decode` / `write_video_with_audio` both accept a `cancel` callback, with the flag checked once more before writing.
+   Two things were fixed along the way: `dsp.Cancelled` and `engines.Cancelled` used to be **two different classes** (so cancelling during the
+   DSP/EQ stage was displayed as "processing failed"); they are unified in `core/errors.py` now. And the DFN subprocess gets
+   `CREATE_NO_WINDOW` (under pythonw it is a console program, so otherwise it opens a black window). `tests/check_cancel.py`.
+5. **Interface races**: `QThread.terminate()` killing the decoding thread hard (which PyQt officially discourages, and where `wait(2000)` necessarily times out
+   on 69-minute material) became **cooperative cancellation**; analysis results gained a **generation check** (the signals of an old worker are delivered queued and used to
+   overwrite the new file's `_info/_stats/_source_audio/player/waveform`); single-file results gained an **ownership check**
+   (after removing or switching away from the current file, its result is no longer attached to the view). On window close, **every analysis thread is cancelled + waited for one by one** —
+   this one was measured out: a discarded, still-running QThread makes the process exit with `0xC0000005` when its parent is destructed
+   (1 reproduction in 3 consecutive smoke_ui runs, during the shutdown phase after "all passed" had been printed).
+   Section 10 of `tests/smoke_ui.py`.
+6. **Crash diagnosability**: `run.py` now installs `sys.excepthook` + `threading.excepthook` + `faulthandler`.
+   Previously there was not a single one in the whole repository: under pythonw, "some slot raises an exception" was either silent (printed into the void) or aborted
+   (a subagent measured `0xC0000409` on another path), and the user only saw the program disappear with nothing at all in `startup_error.log`.
+   Now exceptions in slots and in worker threads land on disk with a traceback, and hard crashes additionally go to `out/faulthandler.log`.
+   `tests/check_crash_log.py`.
+7. **Process-level inference slots**: batch processing (2 workers) and channel parallelism (2) are two **independent** gates, each reading only free memory and
+   reserving nothing for the other → up to 4 `deep-filter.exe` running at once (each 69-minute channel taking 2–3 GB). They are now pinned by a permit count
+   (roughly one per 2 GB of free memory, capped at 4), and cancellation is honoured while waiting for a slot.
+8. **Resumable downloads now actually work**: the fragment was unconditionally deleted before a retry, so "resume" only worked after a cancel or a crash —
+   and with GitHub being intermittent from this machine, a 200 MB–1.8 GB weight that drops at 90% had to start over. Now the fragment is discarded only when
+   **verification fails**; a network interruption **keeps** it and says so clearly (`tests/check_setup.py` covers this).
+
+### Interface behaviour
+
+9. The track dropdown used to be **a no-op**: `_on_stream_changed` set the track number and `_import_file` immediately cleared it to None,
+   so analysis and processing both fell back to the default track and the dropdown snapped back. Re-importing the same file now keeps the selected track.
+10. "Batch process" is no longer available while a single file is being processed (previously two tasks could run at once), and "cancel" is decided uniformly by
+    `_update_run_enabled`; importing during processing no longer pops a modal dialog (a nested event loop hangs the automation suites),
+    it logs instead and restores the list selection.
+11. **A/B audition now plays at the higher of the two tracks' sample rates**: it used to play at the source rate fixedly, so the enhanced track of 16 kHz material was
+    **downsampled back to 16 kHz** — the 8–16 kHz added by bandwidth extension was dropped during audition (making the "for audition" preset inaudible),
+    plus an extra whole-file resampling pass. Switching files also **reopens the audio stream** according to sample rate/channels (reusing the old stream used to play at the wrong speed or
+    hand the callback a mismatched shape), and the cross-thread reads and writes of `_pos/_finished` are now locked.
+
+### Explicitly not done this round (on the record)
+
+- **Variant audition still decodes synchronously on the UI thread** (about 15 s frozen for a 69-minute variant, no progress and no cancel) → it was M6 in the plan and was not done this round.
+- The remaining medium/low-severity items reported by the subagents (`theme.py` sets only 8 roles in the Disabled group, `run.log` opens and closes every line,
+  `wheel_guard` intercepting `QScrollBar`, the module-name heuristic in `cuda_ep_active()`, no disk pre-check before the DFN temporary WAV, etc.)
+  were not addressed one by one; among them, the item "BWE/EQ reconstruction error at every 30 s block boundary" was measured by the main agent with an identity curve and **does not hold**
+  (for a 65 s signal `max|y−x| = 4.5e-8`, with no difference between block boundaries and block interiors), so **do not** go and "fix" the chunking logic on its account.
+
+---
+
+## Directory layout
 
 ```
 AudioEnhancer_zk21/
-  run.py                 # 启动入口
-  setup_env.ps1          # 建 venv + 安装 + 自检 + 下载模型
-  make_shortcut.ps1      # 创建桌面/开始菜单快捷方式
-  make_icon.py           # 生成 icon.ico
-  icon.ico               # 应用图标（7 个尺寸，16→256）
-  requirements.txt       # 固定版本依赖
-  models.json            # 模型清单（多来源、按源记录 size/sha256）
-  README.md              # 本文件
-  LICENSE                # GPL-3.0 全文
-  THIRD_PARTY_NOTICES.md # 第三方组件与模型来源声明
-  docs/screenshots/      # 界面截图（上面「界面截图」一节引用）
+  run.py                 # startup entry point
+  setup_env.ps1          # create the venv + install + self-check + download models
+  make_shortcut.ps1      # create the desktop / Start-menu shortcut
+  make_icon.py           # generate icon.ico
+  icon.ico               # application icon (7 sizes, 16→256)
+  requirements.txt       # pinned dependencies
+  models.json            # model manifest (several sources, size/sha256 recorded per source)
+  README.md              # this file
+  LICENSE                # the full GPL-3.0 text
+  THIRD_PARTY_NOTICES.md # third-party components and model provenance
+  docs/screenshots/      # interface screenshots (referenced by "Interface screenshots" above)
   core/
-    media_io.py          # 媒体探测 / 解码 / 编码 / 重采样（音频与视频统一入口）；写出是原子的
-    errors.py            # 跨模块共用异常（Cancelled 只有一个定义，见文件内说明）
-    dsp.py               # 电平分析、静音检测、归一化、谱门限；帧电平与整段统计都按块算
-    modelstore.py        # 清单解析 + 多源下载器（断点续传、按源校验）
-    cuda_env.py          # CUDA/cuDNN 运行库可见性 + 显存预检 + 「CUDA 真启用了吗」的证据回读
-    sysinfo.py           # 本机资源探测（可用物理内存）：批处理守卫、BWE 预检、声道并行闸门共用
-    engines.py           # 引擎统一接口 + sherpa / DFN exe / DSP / 带宽扩展 四种实现 + 设备决策
-    pipeline.py          # 纯逻辑流水线（不依赖 Qt，可命令行调用）；含声道并行与内存闸门
-    enhance.py           # 搁架 EQ / 高通 / 温和压缩 / 混响衰减斜率指标
-    bwe.py               # 带宽扩展封装：本地权重优先解析（绕开 HuggingFace）+ 分块交叉淡化
-    wpe.py               # 单通道 WPE：实测无效，流水线硬拒绝；保留实现与失败记录
-    outputs.py           # 输出目录与命名规范、参数指纹、manifest 登记、变体扫描
-    worker.py            # Qt 线程包装 + 批处理引擎（并发按可用内存收敛）
+    media_io.py          # media probing / decoding / encoding / resampling (one entry point for audio and video); writes are atomic
+    errors.py            # exceptions shared across modules (Cancelled has exactly one definition, see the note in the file)
+    dsp.py               # level analysis, silence detection, normalisation, spectral gating; frame level and whole-file statistics are both computed in chunks
+    modelstore.py        # manifest parsing + multi-source downloader (resumable, verified per source)
+    cuda_env.py          # CUDA/cuDNN runtime visibility + VRAM pre-check + the read-back evidence for "was CUDA really enabled"
+    sysinfo.py           # local resource probing (available physical memory): shared by the batch guard, the BWE pre-check and the channel-parallelism gate
+    engines.py           # unified engine interface + four implementations (sherpa / DFN exe / DSP / bandwidth extension) + device decisions
+    pipeline.py          # the pure-logic pipeline (no Qt dependency, callable from the command line); contains channel parallelism and the memory gate
+    enhance.py           # shelf EQ / high-pass / gentle compression / the reverb decay-slope metric
+    bwe.py               # bandwidth-extension wrapper: local weights resolved first (bypassing HuggingFace) + chunked crossfading
+    wpe.py               # single-channel WPE: measured ineffective, hard-rejected by the pipeline; the implementation and failure record are kept
+    outputs.py           # output directory and naming convention, parameter fingerprint, manifest recording, variant scanning
+    worker.py            # Qt thread wrapper + the batch engine (concurrency converges on available memory)
   ui/
-    main_window.py       # 主窗口（文件清单 / 批处理 / 变体试听 / 预设）
-    theme.py             # 深色主题：调色板 + 全局样式表
-    player.py            # A/B 播放器（sounddevice）
-    waveform.py          # 波形对比视图（QPainter 自绘）
-    wheel_guard.py       # 滚轮护栏：无焦点时滚轮交给页面滚动，不误改参数
+    main_window.py       # main window (file list / batch processing / variant audition / presets)
+    theme.py             # dark theme: palette + global style sheet
+    player.py            # A/B player (sounddevice)
+    waveform.py          # waveform comparison view (custom-painted with QPainter)
+    wheel_guard.py       # wheel guard: with no focus the wheel goes to page scrolling instead of changing a parameter
   tools/
-    diagnose_audio.py    # 真实素材客观诊断：容器/流清单、混响斜率（含带限复核）、频谱倾斜、倍频程表
-    tune_demud.py        # 去闷 EQ 的效果验证与调参（可直接导出片段供试听）
-    measure_stages.py    # 分阶段耗时测量：按界面预设复跑、输出各阶段秒数与进程峰值驻留（--parallel 可隔离声道并行）
-    hf_artifact_probe.py # 带宽扩展的高频伪影测量：离散线/镜像检验/CPU-GPU 对照
-  models/                # 权重缓存（可整个删除重下）
-  models/bwe/            # 带宽扩展权重（删掉它 + 去掉 audiosronnx 即退回纯降噪）
-  samples/               # 官方测试音频
-  samples/AudioEnhancer_zk21/   # 处理 samples/ 里的音频时，结果落在输入目录旁（可整个删除）
-  out/                   # 项目级输出；自动写出回退时也落这里
-  out/run.log            # 界面日志的落盘副本（超 2 MB 轮转一份）——pythonw 启动时唯一的运行记录
-  out/faulthandler.log   # 硬崩溃（段错误等）的 C 级堆栈，由 run.py 装载的 faulthandler 写
-  out/startup_error.log  # 启动失败、未捕获异常（含 Qt 槽内与工作线程）的 traceback
-  .venv/                 # 独立环境（与 Anaconda base 完全隔离）
+    diagnose_audio.py    # objective diagnosis of real material: container/stream listing, reverb slope (with the band-limited recheck), spectral tilt, octave table
+    tune_demud.py        # verifying and tuning the de-muffle EQ (can export excerpts for audition)
+    measure_stages.py    # stage-timing measurement: re-runs the interface presets, prints each stage's seconds and the peak process resident (--parallel isolates channel parallelism)
+    hf_artifact_probe.py # high-frequency artefact measurement for bandwidth extension: discrete lines / mirror test / CPU-GPU comparison
+  models/                # weight cache (can be deleted wholesale and re-downloaded)
+  models/bwe/            # bandwidth-extension weights (delete it + drop audiosronnx to go back to denoising only)
+  samples/               # the official test audio
+  samples/AudioEnhancer_zk21/   # processing audio in samples/ writes results next to the input (can be deleted wholesale)
+  out/                   # project-level output; also where automatic write-out falls back to
+  out/run.log            # on-disk copy of the interface log (rotated once past 2 MB) — the only run record when started with pythonw
+  out/faulthandler.log   # C-level stack for hard crashes (segfaults etc.), written by the faulthandler run.py installs
+  out/startup_error.log  # tracebacks of failed starts and uncaught exceptions (including in Qt slots and worker threads)
+  .venv/                 # the isolated environment (fully separate from the Anaconda base)
 ```
 
 ---
 
-## 网络与镜像
+## Network and mirrors
 
-本机网络是**选择性可达**的，实测：
+This machine's network is **selectively reachable**, measured:
 
-| 主机 | 状态 |
+| Host | Status |
 | --- | --- |
-| `github.com` / `raw.githubusercontent.com` | **时通时断**（同一天内观察到 200 与被阻断两种状态） |
-| `huggingface.co` | **不可达**（DNS 正常，TCP 超时 = IP 层阻断） |
-| `hf-mirror.com` | 可达 |
-| `pypi.org` / `modelscope.cn` | 可达，但 `pypi.org` 的**文件下载很慢**（实测 256 KB/s） |
-| `pypi.tuna.tsinghua.edu.cn`（清华 TUNA） | 可达且快（实测 **10.8 MB/s**，同一条链路快 42 倍） |
+| `github.com` / `raw.githubusercontent.com` | **intermittent** (both a 200 and a blocked state observed on the same day) |
+| `huggingface.co` | **unreachable** (DNS resolves fine, TCP times out = blocked at the IP layer) |
+| `hf-mirror.com` | reachable |
+| `pypi.org` / `modelscope.cn` | reachable, but **file downloads from `pypi.org` are very slow** (measured 256 KB/s) |
+| `pypi.tuna.tsinghua.edu.cn` (Tsinghua TUNA) | reachable and fast (measured **10.8 MB/s**, 42× faster over the same link) |
 
-**装大 wheel（尤其是 CUDA 运行库，动辄数百 MB）务必加镜像**——实测用默认源下一个 711 MB 的 `nvidia-cudnn-cu12` 要 2 小时以上，换 TUNA 后整个 1.8 GB 的 CUDA 运行库几分钟就下完：
+**Always add a mirror when installing large wheels (especially the CUDA runtime libraries, easily hundreds of MB)** — measured, downloading a 711 MB `nvidia-cudnn-cu12` from the default index takes over 2 hours, whereas with TUNA the whole 1.8 GB CUDA runtime finishes in a few minutes:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple "包名"
+.\.venv\Scripts\python.exe -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple "<package-name>"
 ```
 
-因此 `models.json` 里的每个文件都按**镜像优先**排列来源，并且 **size/sha256 是按源记录的**——同一模型在不同来源是两次不同的导出，字节数不同，校验只对照实际命中的那个源。下载器会逐个来源降级、支持断点续传、并在校验失败时丢弃残片重试。
+For that reason every file in `models.json` lists its sources **mirror-first**, and **size/sha256 are recorded per source** — the same model may be two different exports at different sources, with different byte counts, and verification is only against the source that was actually hit. The downloader steps down through the sources, supports resumable downloads, and discards the fragment and retries when verification fails.
 
-已实测：`hf-mirror.com/csukuangfj/speech-enhancement-models` 的 `gtcrn_simple.onnx` 与官方 release checksum **逐字节吻合**（`e77603ac0c23dac3…`）。
+Measured: `gtcrn_simple.onnx` from `hf-mirror.com/csukuangfj/speech-enhancement-models` matches the official release checksum **byte for byte** (`e77603ac0c23dac3…`).
 
-**DeepFilterNet3 的 exe 只有 GitHub 一个来源，没有镜像。** 如果下载时 GitHub 恰好不通，可在模型列表里稍后重试。
-
----
-
-## 许可证
-
-**GNU GPL-3.0**（全文见 [LICENSE](LICENSE)）。
-
-选择它的直接原因：本软件依赖 **PyQt5**，而 PyQt5 是 GPL-3.0 / 商业双许可，用更宽松的许可证分发会构成冲突。
-第三方组件各自的许可证、以及每个模型权重的上游出处，逐项列在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-**本仓库不含任何模型权重**：`models/`、`.venv/`、`out/`、`samples/AudioEnhancer_zk21/` 都在 `.gitignore` 里；
-权重由界面里的「下载所选模型」或 `tests/download_models.py` 在运行时按 [`models.json`](models.json) 记录的
-多来源地址与 size/sha256 下载并校验（默认那一组约 10 MB）。
+**The DeepFilterNet3 exe has only one source, GitHub, and no mirror.** If GitHub happens to be unreachable when you download, retry later from the model list.
 
 ---
 
-## 回退方式
+## License
 
-- **只删软件**：删除仓库所在的整个目录即可。项目内没有任何系统级安装、注册表写入或计划任务。
-- **只删环境**：删除 `.venv`（**纯 CPU 安装实测 718 MB**，主要是 Qt5 与 PyAV 自带的 FFmpeg；装了可选 GPU 运行库后为 **3.5 GB**，多出来的约 2 GB 全是 CUDA/cuDNN），重新运行 `setup_env.ps1` 即可重建。
-- **只删模型**：删除 `models/`，或用界面里的「下载所选模型」重新获取。
-- **退回「纯降噪」（彻底去掉带宽扩展）**：① 删除 `models/bwe/`；② 从 `requirements.txt` 去掉 `audiosronnx`；③ 从 `models.json` 删掉 3 个 `kind: "bwe"` 条目。三步都要做——只删权重的话，界面上那 3 个引擎还在（只是显示「需下载」）。
-- **未改动 Anaconda base**：全过程只向项目内 `.venv` 安装包，没有对 Anaconda 环境做任何安装/升级/卸载。
+**GNU GPL-3.0** (the full text is in [LICENSE](LICENSE)).
+
+The direct reason for choosing it: this software depends on **PyQt5**, and PyQt5 is GPL-3.0 / commercially dual-licensed, so distributing it under a more permissive licence would be a conflict.
+The individual licences of the third-party components, and the upstream provenance of every model weight, are listed item by item in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+**This repository contains no model weights at all**: `models/`, `.venv/`, `out/` and `samples/AudioEnhancer_zk21/` are all in `.gitignore`;
+the weights are downloaded and verified at runtime by "Download selected model" in the interface or by `tests/download_models.py`, using the
+multi-source addresses and size/sha256 values recorded in [`models.json`](models.json) (the default set is about 10 MB).
 
 ---
 
-## 给语音识别（ASR）用途的建议
+## Rolling back
 
-本软件**不内置语音识别**，只输出增强后的音频，供你现有的识别流程使用。几条基于本机实测的建议：
+- **Remove only the software**: delete the whole repository directory. There are no system-level installations, registry writes or scheduled tasks inside the project.
+- **Remove only the environment**: delete `.venv` (**a pure-CPU install measured 718 MB**, mostly Qt5 and PyAV's bundled FFmpeg; with the optional GPU runtime installed it is **3.5 GB**, the extra ~2 GB being all CUDA/cuDNN), then re-run `setup_env.ps1` to rebuild it.
+- **Remove only the models**: delete `models/`, or fetch them again with "Download selected model" in the interface.
+- **Go back to "denoising only" (removing bandwidth extension entirely)**: ① delete `models/bwe/`; ② remove `audiosronnx` from `requirements.txt`; ③ remove the 3 `kind: "bwe"` entries from `models.json`. All three steps are needed — delete only the weights and those 3 engines are still in the interface (just showing "needs download").
+- **The Anaconda base was not modified**: throughout, packages were installed only into the project's `.venv`, and nothing in the Anaconda environment was installed, upgraded or uninstalled.
 
-1. **保留对照组。** 至少跑三份：不处理、DSP 基线、DPDFNet2。用同一段音频做识别，比较结果差异。增强到底有没有帮到识别，只有实测能回答。
-2. **先把电平拉起来。** 偏低电平对识别率的影响往往比噪声更大。勾选「增益归一化」，目标 −3 dBFS。
-3. **「降噪强度」多试几档**（0 / 6 / 12 / 18 dB）。降噪越狠不等于识别越好。
-4. **输出用 WAV 24-bit**，别用 MP3——有损编码在有噪声的素材上会额外损失信息。
-5. **`Timeline 1.wav` 的备忘（本轮未处理它）**：该文件实测 24-bit/48kHz 立体声、总长 15:56，但**只有前 19.28 秒有声音**，其余约 937 秒是全零字节（t=60s 起 6MB 采样内非零字节数为 0）。若你的原意是一段约 16 分钟的录音，很可能是导出时丢了内容，建议重新导出。软件内的静音检测会在导入后直接提示「可用内容 0.00s–19.28s」。
+---
+
+## Advice for speech-recognition (ASR) use
+
+This software **does not include speech recognition**; it only outputs enhanced audio for your existing recognition pipeline. A few suggestions based on measurements on this machine:
+
+1. **Keep controls.** Run at least three: no processing, the DSP baseline, and DPDFNet2. Recognise the same stretch of audio with each and compare the results. Only measurement can answer whether enhancement actually helps recognition.
+2. **Lift the level first.** A low level often affects the recognition rate more than noise does. Check "gain normalisation", target −3 dBFS.
+3. **Try several "denoise strength" settings** (0 / 6 / 12 / 18 dB). Harsher denoising does not mean better recognition.
+4. **Output WAV 24-bit**, not MP3 — lossy encoding costs you additional information on noisy material.
+5. **A note on `Timeline 1.wav` (not processed this round)**: measured, this file is 24-bit/48 kHz stereo with a total length of 15:56, but **only the first 19.28 seconds contain sound**; the remaining ~937 seconds are all zero bytes (from t=60s onwards, the non-zero byte count within 6 MB of samples is 0). If your intent was a recording of about 16 minutes, content was very likely lost during export and you should export it again. The software's silence detection will tell you straight away after import: "usable content 0.00s–19.28s".

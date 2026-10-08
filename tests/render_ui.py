@@ -19,6 +19,15 @@ import os
 import sys
 import time
 
+# Windows 中文控制台的默认编码是 GBK，断言名里的 ✓ 会让 print 抛
+# UnicodeEncodeError 并让整个脚本以非 0 状态退出（测试其实全过了）。
+# 这里尽量把两个流切到 UTF-8；切不动也不影响测试逻辑。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt5.QtCore import QRect, Qt  # noqa: E402
